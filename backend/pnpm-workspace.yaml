@@ -1,0 +1,10 @@
+# Standalone snapshot: the root package is the only project.
+# allowBuilds records explicit approval for postinstall scripts that must
+# run (Prisma engines download, esbuild binary install). Same convention as
+# the source repository's pnpm-workspace.yaml, reduced to this snapshot's
+# dependency set.
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

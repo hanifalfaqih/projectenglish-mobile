@@ -1,0 +1,19 @@
+# Install output (recreated by `pnpm install`)
+node_modules/
+
+# Compiled output (recreated by `pnpm build`)
+dist/
+
+# Local secrets (created from `.env.example`, never committed)
+.env
+.env.local
+.env.*.local
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# macOS
+.DS_Store

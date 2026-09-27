@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ConversationStatus {
+  active
+  closed
+}
+
+enum MessageRole {
+  system
+  user
+  assistant
+}
+
+enum RetryFeedbackStatus {
+  pending
+  generated
+  failed
+}
+
+// M19 — Learning Foundation. Closed product taxonomy (Contract §12/§13).
+// Values are lowercase to match the existing enum convention above.
+enum LearningDimension {
+  content
+  clarity
+  english
+  professional_communication
+}
+
+enum LearningFocus {
+  weak_relevance
+  incomplete_content
+  weak_specificity
+  weak_organization
+  weak_coherence
+  hard_to_follow
+  grammar
+  word_choice
+  sentence_construction
+  naturalness
+  unclear_ownership
+  weak_decision_making
+  weak_professional_framing
+}
+
+model Conversation {
+  id                  String             @id @default(cuid())
+  status              ConversationStatus @default(active)
+  state               Json
+  stateVersion        Int                @default(1)
+  experienceProfileId String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  messages            Message[]
+  experienceProfile   ExperienceProfile?   @relation(fields: [experienceProfileId], references: [id])
+  feedback            Feedback?
+  retries             RetryPractice[]
+  // M19: navigability only — adds no column to this table (Contract §26.1).
+  learningDerivations LearningDerivation[]
+  learningSignals     LearningSignal[]
+}
+
+model Feedback {
+  id                        String   @id @default(cuid())
+  conversationId            String   @unique
+  promptVersion             String
+  overall                   String
+  items                     Json
+  professionalCommunication Json?
+  createdAt                 DateTime @default(now())
+
+  conversation       Conversation        @relation(fields: [conversationId], references: [id])
+  retries            RetryPractice[]
+  // M19: navigability only — adds no column to this table (Contract §26.1).
+  learningDerivation LearningDerivation?
+}
+
+model ExperienceProfile {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items         ExperienceItem[]
+  conversations Conversation[]
+  // M19: navigability only — adds no column to this table (Contract §26.1).
+  practiceTrack PracticeTrack?
+}
+
+model ExperienceItem {
+  id           String   @id @default(cuid())
+  profileId    String
+  title        String
+  organization String?
+  role         String?
+  description  String
+  skills       String[]
+  position     Int
+
+  profile ExperienceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  promptVersion  String?
+  clientTurnId   String?
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@unique([conversationId, clientTurnId])
+}
+
+// M12 — Deliberate Retry / Deliberate Practice.
+//
+// Durable, append-only practice artifacts: each submission creates a NEW row
+// that is never replaced or deleted. Lifecycle metadata (supersededAt) and
+// feedback fields (feedback / feedbackPromptVersion / feedbackStatus) may be
+// updated in place, but a row itself is never overwritten. The CURRENT retry
+// for (conversationId, answerMessageId) is the newest row with
+// supersededAt IS NULL. retryClientKey is globally unique for idempotency and
+// is persisted on every row (never lost when a newer retry supersedes it).
+model RetryPractice {
+  id                    String              @id @default(cuid())
+  conversationId        String
+  feedbackId            String
+  answerMessageId       String
+  questionMessageId     String?
+  retryClientKey        String              @unique
+  retryAnswer           String
+  feedback              Json?
+  feedbackPromptVersion String?
+  feedbackStatus        RetryFeedbackStatus @default(pending)
+  supersededAt          DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  feedbackRef  Feedback     @relation(fields: [feedbackId], references: [id])
+
+  @@index([conversationId, answerMessageId])
+}
+
+// M19 — Learning Foundation.
+//
+// Durable, append-only learning artifacts. M19 CREATES them and never CONSUMES
+// them: no interview, feedback, review, retry, or recovery path reads a signal
+// (Contract §4/§32). Rows are immutable after insert — there is deliberately no
+// updatedAt, status, lifecycle, or counter column anywhere below because M19 has
+// no code path that would write one (§19).
+//
+// Traceability (Contract §10): Feedback.items is JSON with no relational item
+// table, so a signal names its source item by ORDINAL (feedbackItemIndex, the
+// only source reference the model may produce) while the durable Message
+// references are resolved BY THE BACKEND out of that item and stored as
+// validated string columns with no FK to Message — the established M11/M12
+// posture. LearningDerivation.feedbackId is the durable provenance anchor.
+
+/// Continuity anchor for one experience. No identity, no aggregates, no
+/// user-facing surface (Contract §7).
+model PracticeTrack {
+  id                  String   @id @default(cuid())
+  experienceProfileId String   @unique
+  createdAt           DateTime @default(now())
+
+  experienceProfile ExperienceProfile    @relation(fields: [experienceProfileId], references: [id])
+  derivations       LearningDerivation[]
+  signals           LearningSignal[]
+}
+
+/// One derivation per source Feedback. The unique feedbackId is the idempotency
+/// anchor (Contract §21.1); promptVersion records the learning prompt used (§27).
+model LearningDerivation {
+  id              String   @id @default(cuid())
+  practiceTrackId String
+  conversationId  String
+  feedbackId      String   @unique
+  promptVersion   String
+  createdAt       DateTime @default(now())
+
+  practiceTrack PracticeTrack    @relation(fields: [practiceTrackId], references: [id])
+  conversation  Conversation     @relation(fields: [conversationId], references: [id])
+  feedback      Feedback         @relation(fields: [feedbackId], references: [id])
+  signals       LearningSignal[]
+
+  @@index([practiceTrackId])
+}
+
+/// A qualitative, evidence-grounded practice signal. Immutable after insert.
+model LearningSignal {
+  id                String            @id @default(cuid())
+  derivationId      String
+  practiceTrackId   String
+  conversationId    String
+  feedbackItemIndex Int
+  answerMessageId   String
+  questionMessageId String?
+  dimension         LearningDimension
+  focus             LearningFocus
+  observation       String
+  practiceCue       String
+  createdAt         DateTime          @default(now())
+
+  derivation    LearningDerivation @relation(fields: [derivationId], references: [id])
+  practiceTrack PracticeTrack      @relation(fields: [practiceTrackId], references: [id])
+  conversation  Conversation       @relation(fields: [conversationId], references: [id])
+
+  @@unique([derivationId, feedbackItemIndex, focus])
+  @@index([practiceTrackId])
+  @@index([conversationId])
+}
