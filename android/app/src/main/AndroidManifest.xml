@@ -2,8 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required for voice input once an STT provider is wired. Requested
+        only when the user taps the microphone, never at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Development only: the dev backend is plain HTTP (see BuildConfig.API_BASE_URL).
+        Replace with HTTPS + a network security config before any release. -->
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

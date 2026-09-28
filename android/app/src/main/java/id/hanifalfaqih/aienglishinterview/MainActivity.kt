@@ -9,12 +9,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
+import id.hanifalfaqih.aienglishinterview.core.monetization.RevenueCatConfig
 import id.hanifalfaqih.aienglishinterview.navigation.AppNavHost
 import id.hanifalfaqih.aienglishinterview.ui.theme.AIEnglishInterviewTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configures RevenueCat when a public SDK key is supplied; otherwise
+        // the paywall reports unavailable and the app works without it.
+        RevenueCatConfig.init(this)
         enableEdgeToEdge()
         setContent {
             AIEnglishInterviewTheme {
