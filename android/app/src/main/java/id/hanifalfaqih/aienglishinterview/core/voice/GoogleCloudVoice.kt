@@ -44,7 +44,8 @@ internal const val STT_MAX_DURATION_MS = 55_000L
 internal const val STT_CHUNK_SHORTS = 1600 // 100 ms at 16 kHz
 internal const val STT_SPEECH_RMS_THRESHOLD = 250.0
 internal const val STT_MIN_SPEECH_MS = 500L
-internal const val STT_END_SILENCE_MS = 1_500L
+internal const val STT_END_SILENCE_MS = 4_000L
+internal const val READ_POLL_DELAY_MS = 15L
 private const val STT_ENDPOINT = "https://speech.googleapis.com/v1/speech:recognize"
 
 sealed interface SttOutcome {
@@ -112,7 +113,12 @@ class AndroidAudioCapture : AudioCapture {
 
     override fun read(buffer: ShortArray): Int {
         return try {
-            recorder?.read(buffer, 0, buffer.size) ?: -1
+            // Non-blocking: returns immediately with 0 when no data is
+            // available yet. A blocking read can park the recording thread
+            // indefinitely (observed on the emulator), starving stop,
+            // silence, cap, and cancellation checks — so blocking is never
+            // used here regardless of device behavior.
+            recorder?.read(buffer, 0, buffer.size, AudioRecord.READ_NON_BLOCKING) ?: -1
         } catch (e: IllegalStateException) {
             -1
         }

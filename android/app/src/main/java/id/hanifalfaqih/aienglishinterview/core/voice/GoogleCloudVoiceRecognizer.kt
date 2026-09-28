@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -145,7 +146,14 @@ class GoogleCloudVoiceRecognizer(
             if (isFinishRequested()) break
             val read = withContext(io) { capture.read(chunk) }
             if (read < 0) break
-            if (read == 0) continue
+            if (read == 0) {
+                // No data yet — poll again after a short pause. Zero is
+                // never EOS/error: the loop must keep reaching its stop,
+                // silence, cap, and cancellation checks. Cancellable, so
+                // release works even mid-silence.
+                delay(READ_POLL_DELAY_MS)
+                continue
+            }
             val rms = rms(chunk, read)
             val chunkMs = read * 1000L / STT_SAMPLE_RATE_HZ
             totalMs += chunkMs
