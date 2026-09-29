@@ -278,6 +278,7 @@ export class FeedbackService {
     proposed: {
       answerMessageId: string;
       questionMessageId?: string | null;
+      practiceOpportunity: boolean;
       whatWorked?: string;
       couldImprove?: string;
       tryNextTime?: string;
@@ -312,6 +313,10 @@ export class FeedbackService {
       const validated: AnswerFeedbackItem = {
         answerMessageId: answer.id,
         questionMessageId,
+        // Model-declared practice signal, passed through verbatim (never
+        // inferred): true = genuine Practice Again target, false = praise /
+        // observation only. Already Zod-validated as boolean upstream.
+        practiceOpportunity: item.practiceOpportunity,
       };
       if (item.whatWorked) validated.whatWorked = item.whatWorked;
       if (item.couldImprove) validated.couldImprove = item.couldImprove;

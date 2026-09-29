@@ -29,11 +29,17 @@ const nonEmpty = (max: number) =>
  * A single answer-level feedback item as PROPOSED by the LLM (untrusted).
  * `.strict()` rejects unknown fields — in particular any numeric field. The
  * three qualitative fields are each optional (not forced per answer).
+ *
+ * `practiceOpportunity` is REQUIRED on newly generated output (M11 v0.3 W-6):
+ * the model must explicitly declare whether the item identifies a meaningful,
+ * actionable weakness worth deliberate retry (true) or is a praise-only
+ * observation (false). The backend never infers it from field presence.
  */
 export const ProposedAnswerFeedbackItem = z
   .object({
     answerMessageId: z.string().min(1),
     questionMessageId: z.string().min(1).nullable().optional(),
+    practiceOpportunity: z.boolean(),
     whatWorked: nonEmpty(FEEDBACK_LIMITS.ANSWER_ITEM_FIELD_MAX).optional(),
     couldImprove: nonEmpty(FEEDBACK_LIMITS.ANSWER_ITEM_FIELD_MAX).optional(),
     tryNextTime: nonEmpty(FEEDBACK_LIMITS.ANSWER_ITEM_FIELD_MAX).optional(),
@@ -69,6 +75,15 @@ export type FeedbackOutput = z.infer<typeof FeedbackOutput>;
 export interface AnswerFeedbackItem {
   answerMessageId: string;
   questionMessageId: string | null;
+  /**
+   * M11 v0.3 (W-6): true when the item identifies a meaningful weakness the
+   * candidate can concretely address in a retry (a Practice Again target);
+   * false for praise-only observations. Explicitly model-declared on new
+   * items; legacy persisted items without the field read back as false
+   * (see repository normalization) so they never silently become practice
+   * targets.
+   */
+  practiceOpportunity: boolean;
   /**
    * M13 (additive, derived): the text of the referenced questionMessageId,
    * resolved at read time from the transcript. Not persisted in the Feedback

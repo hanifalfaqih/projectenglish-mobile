@@ -41,7 +41,14 @@ const MESSAGES: MessageRecord[] = [
 
 const OUTPUT: FeedbackOutputRaw = {
   overall: "Solid answers.",
-  answerItems: [{ answerMessageId: "u1", questionMessageId: "a1", whatWorked: "clear" }],
+  answerItems: [
+    {
+      answerMessageId: "u1",
+      questionMessageId: "a1",
+      practiceOpportunity: true,
+      whatWorked: "clear",
+    },
+  ],
 };
 
 class InMemoryFeedbackRepo {

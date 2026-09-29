@@ -23,6 +23,7 @@ describe("FeedbackOutput schema (qualitative-only)", () => {
         {
           answerMessageId: "m1",
           questionMessageId: "q1",
+          practiceOpportunity: true,
           whatWorked: "Concrete example.",
           couldImprove: "Add the outcome.",
         },
@@ -30,6 +31,22 @@ describe("FeedbackOutput schema (qualitative-only)", () => {
     });
     expect(parsed.answerItems[0].tryNextTime).toBeUndefined();
     expect(parsed.answerItems[0].whatWorked).toBe("Concrete example.");
+    expect(parsed.answerItems[0].practiceOpportunity).toBe(true);
+  });
+
+  it("accepts a praise-only observation marked as not a practice opportunity", () => {
+    const parsed = FeedbackOutput.parse({
+      overall: "Good.",
+      answerItems: [
+        {
+          answerMessageId: "m1",
+          questionMessageId: "q1",
+          practiceOpportunity: false,
+          whatWorked: "Strong, complete answer.",
+        },
+      ],
+    });
+    expect(parsed.answerItems[0].practiceOpportunity).toBe(false);
   });
 
   it("accepts optional professionalCommunication notes", () => {
@@ -69,7 +86,30 @@ describe("FeedbackOutput schema (qualitative-only)", () => {
 
   it("requires a non-empty answerMessageId", () => {
     expect(() =>
-      ProposedAnswerFeedbackItem.parse({ answerMessageId: "" }),
+      ProposedAnswerFeedbackItem.parse({
+        answerMessageId: "",
+        practiceOpportunity: true,
+      }),
+    ).toThrow();
+  });
+
+  it("requires practiceOpportunity and rejects non-boolean values", () => {
+    // Missing marker: rejected rather than silently guessed.
+    expect(() =>
+      ProposedAnswerFeedbackItem.parse({ answerMessageId: "m1" }),
+    ).toThrow();
+    // Non-boolean marker: rejected.
+    expect(() =>
+      ProposedAnswerFeedbackItem.parse({
+        answerMessageId: "m1",
+        practiceOpportunity: "yes",
+      }),
+    ).toThrow();
+    expect(() =>
+      ProposedAnswerFeedbackItem.parse({
+        answerMessageId: "m1",
+        practiceOpportunity: 1,
+      }),
     ).toThrow();
   });
 
@@ -82,6 +122,7 @@ describe("FeedbackOutput schema (qualitative-only)", () => {
   it("enforces the max answer-items bound", () => {
     const items = Array.from({ length: FEEDBACK_LIMITS.MAX_ANSWER_ITEMS + 1 }, () => ({
       answerMessageId: "m1",
+      practiceOpportunity: true,
     }));
     expect(() =>
       FeedbackOutput.parse({ overall: "Good.", answerItems: items }),

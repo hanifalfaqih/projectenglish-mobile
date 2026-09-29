@@ -4,6 +4,7 @@ import {
   ConversationNotFoundError,
   ConversationNotClosedError,
   FeedbackInProgressError,
+  FeedbackGenerationError,
   FeedbackNotFoundError,
 } from "./service.js";
 import { ProviderError, ProviderTimeoutError } from "../conversation/service.js";
@@ -115,6 +116,7 @@ const VALID_OUTPUT: FeedbackOutputRaw = {
     {
       answerMessageId: "u1",
       questionMessageId: "a1",
+      practiceOpportunity: true,
       whatWorked: "Named a real project.",
       couldImprove: "Add the impact.",
     },
@@ -234,7 +236,7 @@ describe("FeedbackService.generateFeedback", () => {
     it("drops an item whose answerMessageId does not exist", async () => {
       const provider = makeProvider({
         overall: "ok",
-        answerItems: [{ answerMessageId: "nope", whatWorked: "x" }],
+        answerItems: [{ answerMessageId: "nope", practiceOpportunity: true, whatWorked: "x" }],
       });
       const service = new FeedbackService({
         conversationRepository: makeConvRepo(makeConversation()),
@@ -248,7 +250,7 @@ describe("FeedbackService.generateFeedback", () => {
     it("drops an item whose answerMessageId has the wrong role (assistant)", async () => {
       const provider = makeProvider({
         overall: "ok",
-        answerItems: [{ answerMessageId: "a1", whatWorked: "x" }], // a1 is assistant
+        answerItems: [{ answerMessageId: "a1", practiceOpportunity: true, whatWorked: "x" }], // a1 is assistant
       });
       const service = new FeedbackService({
         conversationRepository: makeConvRepo(makeConversation()),
@@ -262,7 +264,7 @@ describe("FeedbackService.generateFeedback", () => {
     it("nulls a questionMessageId with the wrong role but keeps the item", async () => {
       const provider = makeProvider({
         overall: "ok",
-        answerItems: [{ answerMessageId: "u1", questionMessageId: "u2" }], // u2 is user
+        answerItems: [{ answerMessageId: "u1", questionMessageId: "u2", practiceOpportunity: true }], // u2 is user
       });
       const service = new FeedbackService({
         conversationRepository: makeConvRepo(makeConversation()),
@@ -278,7 +280,7 @@ describe("FeedbackService.generateFeedback", () => {
       // a2 (offset 2) comes AFTER u1 (offset 1), so it is not a valid preceding question for u1.
       const provider = makeProvider({
         overall: "ok",
-        answerItems: [{ answerMessageId: "u1", questionMessageId: "a2" }],
+        answerItems: [{ answerMessageId: "u1", questionMessageId: "a2", practiceOpportunity: true }],
       });
       const service = new FeedbackService({
         conversationRepository: makeConvRepo(makeConversation()),
@@ -292,7 +294,7 @@ describe("FeedbackService.generateFeedback", () => {
     it("accepts a valid preceding question reference", async () => {
       const provider = makeProvider({
         overall: "ok",
-        answerItems: [{ answerMessageId: "u2", questionMessageId: "a2" }],
+        answerItems: [{ answerMessageId: "u2", questionMessageId: "a2", practiceOpportunity: true }],
       });
       const service = new FeedbackService({
         conversationRepository: makeConvRepo(makeConversation()),
@@ -301,6 +303,84 @@ describe("FeedbackService.generateFeedback", () => {
       });
       const result = await service.generateFeedback("conv-1");
       expect(result.feedback.answerItems[0].questionMessageId).toBe("a2");
+    });
+  });
+
+  describe("practiceOpportunity marker (M11 v0.3 W-6)", () => {
+    it("persists practiceOpportunity=true verbatim for a genuine practice target", async () => {
+      const provider = makeProvider({
+        overall: "ok",
+        answerItems: [
+          {
+            answerMessageId: "u1",
+            questionMessageId: "a1",
+            practiceOpportunity: true,
+            couldImprove: "State the outcome.",
+            tryNextTime: "End with the measured result.",
+          },
+        ],
+      });
+      const service = new FeedbackService({
+        conversationRepository: makeConvRepo(makeConversation()),
+        feedbackRepository: asFeedbackRepo(feedbackRepo),
+        provider,
+      });
+      const result = await service.generateFeedback("conv-1");
+      expect(result.feedback.answerItems).toHaveLength(1);
+      expect(result.feedback.answerItems[0].practiceOpportunity).toBe(true);
+    });
+
+    it("persists practiceOpportunity=false verbatim for a praise-only observation", async () => {
+      const provider = makeProvider({
+        overall: "ok",
+        answerItems: [
+          {
+            answerMessageId: "u1",
+            questionMessageId: "a1",
+            practiceOpportunity: false,
+            whatWorked: "Complete, well-structured answer.",
+          },
+        ],
+      });
+      const service = new FeedbackService({
+        conversationRepository: makeConvRepo(makeConversation()),
+        feedbackRepository: asFeedbackRepo(feedbackRepo),
+        provider,
+      });
+      const result = await service.generateFeedback("conv-1");
+      expect(result.feedback.answerItems).toHaveLength(1);
+      expect(result.feedback.answerItems[0].practiceOpportunity).toBe(false);
+    });
+
+    it("rejects generated output missing practiceOpportunity instead of guessing", async () => {
+      const provider = makeProvider({
+        overall: "ok",
+        answerItems: [{ answerMessageId: "u1", questionMessageId: "a1" }],
+      });
+      const service = new FeedbackService({
+        conversationRepository: makeConvRepo(makeConversation()),
+        feedbackRepository: asFeedbackRepo(feedbackRepo),
+        provider,
+      });
+      await expect(service.generateFeedback("conv-1")).rejects.toThrow(
+        FeedbackGenerationError,
+      );
+      // Nothing persisted on malformed output.
+      expect(
+        await feedbackRepo.findByConversationId("conv-1"),
+      ).toBeNull();
+    });
+
+    it("allows a strong interview to yield zero items (no manufactured weakness)", async () => {
+      const provider = makeProvider({ overall: "Strong throughout.", answerItems: [] });
+      const service = new FeedbackService({
+        conversationRepository: makeConvRepo(makeConversation()),
+        feedbackRepository: asFeedbackRepo(feedbackRepo),
+        provider,
+      });
+      const result = await service.generateFeedback("conv-1");
+      expect(result.created).toBe(true);
+      expect(result.feedback.answerItems).toEqual([]);
     });
   });
 
@@ -370,7 +450,7 @@ describe("FeedbackService.getFeedback", () => {
       conversationId: "conv-1",
       promptVersion: "feedback-1.0.0",
       overall: "Existing.",
-      answerItems: [{ answerMessageId: "u1", questionMessageId: "a1" }],
+      answerItems: [{ answerMessageId: "u1", questionMessageId: "a1", practiceOpportunity: true }],
       professionalCommunication: null,
       createdAt: ts(200),
     });
@@ -393,7 +473,7 @@ describe("FeedbackService.getFeedback", () => {
       conversationId: "conv-1",
       promptVersion: "feedback-1.0.0",
       overall: "Existing.",
-      answerItems: [{ answerMessageId: "u1", questionMessageId: null }],
+      answerItems: [{ answerMessageId: "u1", questionMessageId: null, practiceOpportunity: false }],
       professionalCommunication: null,
       createdAt: ts(200),
     });

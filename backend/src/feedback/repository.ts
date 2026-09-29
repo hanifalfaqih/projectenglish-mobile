@@ -59,11 +59,21 @@ export class FeedbackRepository {
     professionalCommunication: unknown;
     createdAt: Date;
   }): FeedbackArtifact {
+    // Legacy compatibility (M11 v0.3): rows persisted before
+    // practiceOpportunity existed carry no marker. A missing marker reads
+    // back as FALSE — a legacy observation, never silently promoted to a
+    // Practice Again target. New rows always persist an explicit boolean.
+    const rawItems = (row.items as Array<
+      AnswerFeedbackItem & { practiceOpportunity?: unknown }
+    >) ?? [];
     return {
       conversationId: row.conversationId,
       promptVersion: row.promptVersion,
       overall: row.overall,
-      answerItems: (row.items as AnswerFeedbackItem[]) ?? [],
+      answerItems: rawItems.map((item) => ({
+        ...item,
+        practiceOpportunity: item.practiceOpportunity === true,
+      })),
       professionalCommunication:
         (row.professionalCommunication as string[] | null) ?? null,
       createdAt: row.createdAt,

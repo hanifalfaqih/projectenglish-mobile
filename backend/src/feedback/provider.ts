@@ -39,11 +39,12 @@ const FEEDBACK_OUTPUT_SCHEMA = {
           questionMessageId: {
             anyOf: [{ type: "string" }, { type: "null" }],
           },
+          practiceOpportunity: { type: "boolean" },
           whatWorked: { type: "string" },
           couldImprove: { type: "string" },
           tryNextTime: { type: "string" },
         },
-        required: ["answerMessageId"],
+        required: ["answerMessageId", "practiceOpportunity"],
         additionalProperties: false,
       },
     },
