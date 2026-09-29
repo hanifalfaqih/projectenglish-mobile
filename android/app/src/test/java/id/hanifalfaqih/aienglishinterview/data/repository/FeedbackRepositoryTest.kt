@@ -8,10 +8,14 @@ import id.hanifalfaqih.aienglishinterview.data.remote.CreateExperienceProfileReq
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateExperienceProfileResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.FeedbackDto
 import id.hanifalfaqih.aienglishinterview.data.remote.GetConversationResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.OpeningResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.SubmitRetryRequestDto
+import id.hanifalfaqih.aienglishinterview.data.remote.RetryResponseDto
 import id.hanifalfaqih.aienglishinterview.data.remote.InterviewApi
 import id.hanifalfaqih.aienglishinterview.data.remote.ResumeParseResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.VoiceTurnResponse
 import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
@@ -59,6 +63,26 @@ private class FakeFeedbackApi(
     override suspend fun sendTurn(conversationId: String, body: SendTurnRequest): SendTurnResponse =
         throw UnsupportedOperationException()
 
+    override suspend fun getOpening(conversationId: String): OpeningResponse =
+        throw UnsupportedOperationException()
+
+    override suspend fun submitRetry(
+        conversationId: String,
+        body: SubmitRetryRequestDto,
+    ): retrofit2.Response<RetryResponseDto> =
+        throw UnsupportedOperationException()
+
+    override suspend fun getCurrentRetry(
+        conversationId: String,
+        answerMessageId: String,
+    ): RetryResponseDto = throw UnsupportedOperationException()
+
+    override suspend fun regenerateRetryFeedback(
+        conversationId: String,
+        answerMessageId: String,
+    ): RetryResponseDto = throw UnsupportedOperationException()
+
+
     override suspend fun getConversation(conversationId: String): GetConversationResponse =
         throw UnsupportedOperationException()
 
@@ -74,6 +98,13 @@ private class FakeFeedbackApi(
     }
 
     override suspend fun parseResume(file: okhttp3.MultipartBody.Part): ResumeParseResponse =
+        throw UnsupportedOperationException()
+
+    override suspend fun sendVoiceTurn(
+        conversationId: String,
+        audio: okhttp3.MultipartBody.Part,
+        clientTurnId: okhttp3.RequestBody,
+    ): VoiceTurnResponse =
         throw UnsupportedOperationException()
 }
 
@@ -101,6 +132,26 @@ class FeedbackRepositoryTest {
         assertEquals("a1", parsed.answerItems.single().answerMessageId)
         assertNull(parsed.answerItems.single().questionText)
         assertEquals(listOf("p1"), parsed.professionalCommunication)
+    }
+
+    @Test
+    fun dto_parsesPracticeOpportunityTrueAndFalse() {
+        val yes = Json.decodeFromString<FeedbackDto>(
+            """{"conversationId":"c","overall":"o","answerItems":[{"answerMessageId":"a","practiceOpportunity":true}]}""",
+        )
+        val no = Json.decodeFromString<FeedbackDto>(
+            """{"conversationId":"c","overall":"o","answerItems":[{"answerMessageId":"a","practiceOpportunity":false}]}""",
+        )
+        assertEquals(true, yes.answerItems.single().practiceOpportunity)
+        assertEquals(false, no.answerItems.single().practiceOpportunity)
+    }
+
+    @Test
+    fun dto_missingPracticeOpportunityDefaultsFalseNeverTrue() {
+        val parsed = Json.decodeFromString<FeedbackDto>(
+            """{"conversationId":"c","overall":"o","answerItems":[{"answerMessageId":"a"}]}""",
+        )
+        assertEquals(false, parsed.answerItems.single().practiceOpportunity)
     }
 
     @Test

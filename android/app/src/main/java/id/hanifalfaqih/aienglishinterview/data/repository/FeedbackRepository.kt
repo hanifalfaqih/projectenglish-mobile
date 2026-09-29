@@ -76,5 +76,6 @@ class FeedbackRepository(
         whatWorked = whatWorked,
         couldImprove = couldImprove,
         tryNextTime = tryNextTime,
+        practiceOpportunity = practiceOpportunity,
     )
 }

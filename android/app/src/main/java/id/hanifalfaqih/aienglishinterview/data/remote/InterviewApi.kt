@@ -3,6 +3,7 @@ package id.hanifalfaqih.aienglishinterview.data.remote
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Multipart
@@ -84,6 +85,36 @@ data class SendTurnResponse(
     val closing: Boolean = false,
 )
 
+@Serializable
+data class VoiceAudioDto(
+    val format: String = "",
+    val sampleRateHz: Int = 0,
+    val channels: Int = 0,
+    val data: String = "",
+)
+
+@Serializable
+data class VoiceTurnResponse(
+    val transcript: String,
+    val assistantMessage: String,
+    val state: ConversationStateDto,
+    val status: String,
+    val closing: Boolean = false,
+    val audio: VoiceAudioDto? = null,
+    val audioError: String? = null,
+)
+
+/**
+ * AI-first opening response. Same audio envelope as voice turns: PCM audio
+ * when backend synthesis succeeded, null + audioError otherwise.
+ */
+@Serializable
+data class OpeningResponse(
+    val assistantMessage: String,
+    val audio: VoiceAudioDto? = null,
+    val audioError: String? = null,
+)
+
 interface InterviewApi {
     @POST("experience-profiles")
     suspend fun createExperienceProfile(
@@ -111,6 +142,28 @@ interface InterviewApi {
         @Body body: SendTurnRequest,
     ): SendTurnResponse
 
+    /**
+     * AI-first opening for a fresh conversation: returns the interviewer's
+     * first message plus optional PCM audio. 409 when turns already exist.
+     */
+    @POST("conversations/{id}/opening")
+    suspend fun getOpening(
+        @Path("id") conversationId: String,
+    ): OpeningResponse
+
+    /**
+     * Voice turn: raw 16-bit mono 16 kHz PCM as multipart `audio` plus the
+     * `clientTurnId` text field. The backend transcribes with Qwen ASR and
+     * feeds the transcript through the same turn pipeline as [sendTurn].
+     */
+    @Multipart
+    @POST("conversations/{id}/voice-turn")
+    suspend fun sendVoiceTurn(
+        @Path("id") conversationId: String,
+        @Part audio: MultipartBody.Part,
+        @Part("clientTurnId") clientTurnId: RequestBody,
+    ): VoiceTurnResponse
+
     @GET("conversations/{id}")
     suspend fun getConversation(
         @Path("id") conversationId: String,
@@ -129,6 +182,31 @@ interface InterviewApi {
     suspend fun getFeedback(
         @Path("id") conversationId: String,
     ): FeedbackDto
+
+    /**
+     * M12 targeted retry: re-answer one specific original answer.
+     * Returns the raw response so callers distinguish 201 (created) from
+     * 200 (idempotent replay of the same retryClientKey).
+     */
+    @POST("conversations/{id}/retries")
+    suspend fun submitRetry(
+        @Path("id") conversationId: String,
+        @Body body: SubmitRetryRequestDto,
+    ): retrofit2.Response<RetryResponseDto>
+
+    /** Current retry artifact for one answer. 404 when none exists. */
+    @GET("conversations/{id}/retries/{answerId}")
+    suspend fun getCurrentRetry(
+        @Path("id") conversationId: String,
+        @Path("answerId") answerMessageId: String,
+    ): RetryResponseDto
+
+    /** Regenerate feedback for an existing failed retry. */
+    @POST("conversations/{id}/retries/{answerId}/feedback")
+    suspend fun regenerateRetryFeedback(
+        @Path("id") conversationId: String,
+        @Path("answerId") answerMessageId: String,
+    ): RetryResponseDto
 }
 
 // --- Feedback ---
@@ -142,6 +220,11 @@ data class AnswerFeedbackItemDto(
     val whatWorked: String? = null,
     val couldImprove: String? = null,
     val tryNextTime: String? = null,
+    /**
+     * Server-owned practice-eligibility marker (M11). Absent on legacy
+     * payloads, which must read as false — never inferred client-side.
+     */
+    val practiceOpportunity: Boolean = false,
 )
 
 @Serializable
@@ -152,6 +235,49 @@ data class FeedbackDto(
     val answerItems: List<AnswerFeedbackItemDto> = emptyList(),
     val professionalCommunication: List<String>? = null,
     val createdAt: String = "",
+)
+
+// --- M12 targeted retry ---
+
+/**
+ * Retry submission. Field names match the backend contract exactly;
+ * retryClientKey is a per-request idempotency key (a fresh UUID per
+ * submission), never a turn/clientTurnId.
+ */
+@Serializable
+data class SubmitRetryRequestDto(
+    val answerMessageId: String,
+    val questionMessageId: String,
+    val retryAnswer: String,
+    val retryClientKey: String,
+)
+
+/** Qualitative retry feedback. Separate from M11 feedback by design. */
+@Serializable
+data class RetryFeedbackDto(
+    val overall: String,
+    val whatWorked: String? = null,
+    val couldImprove: String? = null,
+    val tryNextTime: String? = null,
+    val professionalCommunication: List<String>? = null,
+)
+
+/** Retry artifact response: 201 created, 200 idempotent replay. */
+@Serializable
+data class RetryResponseDto(
+    val id: String,
+    val conversationId: String,
+    val answerMessageId: String,
+    val questionMessageId: String? = null,
+    val retryClientKey: String,
+    val retryAnswer: String,
+    val feedback: RetryFeedbackDto? = null,
+    val feedbackStatus: String = "",
+    val feedbackPromptVersion: String? = null,
+    val originalQuestion: String = "",
+    val originalAnswer: String = "",
+    val createdAt: String = "",
+    val updatedAt: String = "",
 )
 
 @Serializable

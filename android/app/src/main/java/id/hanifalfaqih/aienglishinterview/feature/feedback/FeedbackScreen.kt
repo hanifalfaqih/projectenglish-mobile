@@ -11,12 +11,16 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -28,7 +32,16 @@ import id.hanifalfaqih.aienglishinterview.core.monetization.MonetizationReposito
 import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
 import id.hanifalfaqih.aienglishinterview.data.model.AnswerFeedback
 import id.hanifalfaqih.aienglishinterview.data.model.Feedback
+import id.hanifalfaqih.aienglishinterview.data.model.Retry
+import id.hanifalfaqih.aienglishinterview.data.model.RetryFeedback
 import id.hanifalfaqih.aienglishinterview.ui.theme.AIEnglishInterviewTheme
+
+/**
+ * Server-owned retry eligibility, read verbatim from
+ * [AnswerFeedback.practiceOpportunity]. Never inferred client-side.
+ */
+internal fun AnswerFeedback.shouldShowRetryAffordance(): Boolean =
+    practiceOpportunity
 
 private class FeedbackViewModelFactory(
     private val conversationId: String,
@@ -49,6 +62,7 @@ fun FeedbackScreen(
     conversationId: String,
     onBack: () -> Unit,
     onGoPremium: () -> Unit,
+    onPracticeAgain: (conversationId: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: FeedbackViewModel = viewModel(
         factory = FeedbackViewModelFactory(conversationId),
@@ -93,10 +107,74 @@ fun FeedbackScreen(
                 FeedbackContent(
                     feedback = state.feedback,
                     isPremium = isPremium,
+                    retryStates = viewModel.retryStates,
+                    practiceFormTarget = viewModel.practiceFormTarget,
                     onGoPremium = onGoPremium,
                     onBack = onBack,
+                    onRequestPractice = { item -> viewModel.requestPractice(item) },
+                    onClosePractice = { viewModel.closePracticeForm() },
+                    onSubmitRetry = { item, answer -> viewModel.startRetry(item, answer) },
+                    onRegenerateRetry = { item -> viewModel.regenerateRetry(item.answerMessageId) },
                     modifier = Modifier.weight(1f),
                 )
+                PracticeAgainRow(
+                    state = viewModel.practiceAgainState,
+                    onPracticeAgain = { viewModel.practiceAgain() },
+                )
+            }
+        }
+
+        val again = viewModel.practiceAgainState
+        if (again is PracticeAgainState.Done) {
+            LaunchedEffect(again.conversationId) {
+                onPracticeAgain(again.conversationId)
+            }
+        }
+        if (again is PracticeAgainState.RequiresPurchase) {
+            LaunchedEffect(Unit) {
+                onGoPremium()
+                viewModel.onPaywallNavigated()
+            }
+        }
+        // M12 gate: eligible item + no premium access → existing paywall.
+        if (viewModel.retryGateRequiresPurchase) {
+            LaunchedEffect(Unit) {
+                onGoPremium()
+                viewModel.onRetryGateNavigated()
+            }
+        }
+    }
+}
+
+@Composable
+private fun PracticeAgainRow(
+    state: PracticeAgainState,
+    onPracticeAgain: () -> Unit,
+) {
+    when (state) {
+        is PracticeAgainState.Working -> {
+            CircularProgressIndicator()
+            Text(
+                text = "Starting a new interview…",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        is PracticeAgainState.Error -> {
+            Text(
+                text = state.message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            TextButton(onClick = onPracticeAgain) {
+                Text("Try Again")
+            }
+        }
+        else -> {
+            OutlinedButton(
+                onClick = onPracticeAgain,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Practice Again")
             }
         }
     }
@@ -106,8 +184,14 @@ fun FeedbackScreen(
 private fun FeedbackContent(
     feedback: Feedback,
     isPremium: Boolean,
+    retryStates: Map<String, AnswerRetryState>,
+    practiceFormTarget: String?,
     onGoPremium: () -> Unit,
     onBack: () -> Unit,
+    onRequestPractice: (AnswerFeedback) -> Unit,
+    onClosePractice: () -> Unit,
+    onSubmitRetry: (AnswerFeedback, String) -> Unit,
+    onRegenerateRetry: (AnswerFeedback) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -138,8 +222,20 @@ private fun FeedbackContent(
                         style = MaterialTheme.typography.titleMedium,
                     )
                 }
-                items(feedback.answerItems) { item ->
-                    AnswerFeedbackCard(item = item)
+                items(
+                    items = feedback.answerItems,
+                    key = { it.answerMessageId },
+                ) { item ->
+                    AnswerFeedbackCard(
+                        item = item,
+                        retryState = retryStates[item.answerMessageId]
+                            ?: AnswerRetryState.Idle,
+                        formOpen = practiceFormTarget == item.answerMessageId,
+                        onRequestPractice = onRequestPractice,
+                        onClosePractice = onClosePractice,
+                        onSubmitRetry = { answer -> onSubmitRetry(item, answer) },
+                        onRegenerateRetry = { onRegenerateRetry(item) },
+                    )
                 }
             }
 
@@ -185,6 +281,37 @@ private fun FeedbackContent(
                     }
                 }
             }
+            // M12 teaser: eligible answers surface the targeted-practice
+            // affordance to non-premium users too; tapping routes through
+            // the existing premium gate to the existing paywall. Ineligible
+            // items never appear here (no upsell for them).
+            val eligible = feedback.answerItems.filter { it.shouldShowRetryAffordance() }
+            if (eligible.isNotEmpty()) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "Targeted practice",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            eligible.forEach { entry ->
+                                if (entry.questionText != null) {
+                                    Text(
+                                        text = "Q: ${entry.questionText}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                OutlinedButton(onClick = { onRequestPractice(entry) }) {
+                                    Text("Practice this")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -203,7 +330,17 @@ private fun FeedbackContent(
 }
 
 @Composable
-private fun AnswerFeedbackCard(item: AnswerFeedback) {
+private fun AnswerFeedbackCard(
+    item: AnswerFeedback,
+    retryState: AnswerRetryState,
+    formOpen: Boolean,
+    onRequestPractice: (AnswerFeedback) -> Unit,
+    onClosePractice: () -> Unit,
+    onSubmitRetry: (String) -> Unit,
+    onRegenerateRetry: () -> Unit,
+) {
+    var draft by remember(item.answerMessageId) { mutableStateOf("") }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             if (item.questionText != null) {
@@ -233,6 +370,98 @@ private fun AnswerFeedbackCard(item: AnswerFeedback) {
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
+
+            if (item.shouldShowRetryAffordance()) {
+                TargetedPracticeSection(
+                    retryState = retryState,
+                    formOpen = formOpen,
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    onPracticeThis = { onRequestPractice(item) },
+                    onCancel = {
+                        onClosePractice()
+                        draft = ""
+                    },
+                    onSubmit = { onSubmitRetry(draft) },
+                    onRegenerate = onRegenerateRetry,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * M12 inline retry interaction for ONE feedback item. The original feedback
+ * above stays visible and immutable; retry content renders below it as a
+ * separate section. Distinctly labeled from M15 "Practice Again".
+ */
+@Composable
+private fun TargetedPracticeSection(
+    retryState: AnswerRetryState,
+    formOpen: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onPracticeThis: () -> Unit,
+    onCancel: () -> Unit,
+    onSubmit: () -> Unit,
+    onRegenerate: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "Targeted Practice",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        when (retryState) {
+            is AnswerRetryState.Submitting -> {
+                CircularProgressIndicator()
+                Text(
+                    text = "Submitting retry…",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            is AnswerRetryState.FeedbackAvailable -> {
+                RetryFeedbackContent(retry = retryState.retry)
+            }
+            is AnswerRetryState.FeedbackFailed -> {
+                Text(
+                    text = "Retry feedback could not be generated.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton(onClick = onRegenerate) {
+                    Text("Regenerate feedback")
+                }
+            }
+            is AnswerRetryState.Error -> {
+                Text(
+                    text = retryState.message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            is AnswerRetryState.Idle -> Unit
+        }
+        // The form stays available for (re)submission whenever no request
+        // is in flight; the draft is preserved across submissions.
+        if (retryState !is AnswerRetryState.Submitting) {
+            if (formOpen) {
+                RetryInputForm(
+                    draft = draft,
+                    onDraftChange = onDraftChange,
+                    onCancel = onCancel,
+                    onSubmit = onSubmit,
+                )
+            } else if (retryState is AnswerRetryState.Idle) {
+                OutlinedButton(onClick = onPracticeThis) {
+                    Text("Practice this")
+                }
+            } else if (retryState is AnswerRetryState.Error) {
+                TextButton(onClick = onSubmit) {
+                    Text("Try Again")
+                }
+            }
         }
     }
 }
@@ -245,6 +474,147 @@ private fun FeedbackScreenPreview() {
             conversationId = "demo-conversation",
             onBack = {},
             onGoPremium = {},
+            onPracticeAgain = {},
         )
+    }
+}
+
+private fun previewItem(practice: Boolean) = AnswerFeedback(
+    answerMessageId = "u1",
+    questionMessageId = "a1",
+    questionText = "Tell me about a challenge?",
+    whatWorked = null,
+    couldImprove = "Explain the challenge before the solution.",
+    tryNextTime = "Use STAR.",
+    practiceOpportunity = practice,
+)
+
+private fun previewRetry() = Retry(
+    id = "r1",
+    conversationId = "conv-1",
+    answerMessageId = "u1",
+    questionMessageId = "a1",
+    retryClientKey = "key-1",
+    retryAnswer = "Better answer.",
+    feedback = RetryFeedback(
+        overall = "Clearer now.",
+        whatWorked = "STAR structure.",
+        couldImprove = null,
+        tryNextTime = "Add metrics.",
+        professionalCommunication = null,
+    ),
+    feedbackStatus = "generated",
+    feedbackPromptVersion = "retry-feedback-1.0.0",
+    originalQuestion = "Tell me about a challenge?",
+    originalAnswer = "Compression was hard.",
+    createdAt = "",
+    updatedAt = "",
+)
+
+@Preview(showBackground = true)
+@Composable
+private fun RetryAffordancePreview() {
+    AIEnglishInterviewTheme {
+        AnswerFeedbackCard(
+            item = previewItem(practice = true),
+            retryState = AnswerRetryState.Idle,
+            formOpen = false,
+            onRequestPractice = {},
+            onClosePractice = {},
+            onSubmitRetry = {},
+            onRegenerateRetry = {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun RetryFeedbackPreview() {
+    AIEnglishInterviewTheme {
+        AnswerFeedbackCard(
+            item = previewItem(practice = true),
+            retryState = AnswerRetryState.FeedbackAvailable(previewRetry()),
+            formOpen = false,
+            onRequestPractice = {},
+            onClosePractice = {},
+            onSubmitRetry = {},
+            onRegenerateRetry = {},
+        )
+    }
+}
+
+@Composable
+private fun RetryInputForm(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onCancel: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            label = { Text("Your retry answer") },
+            supportingText = { Text("Answer the question above again in your own words.") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+        )
+        TextButton(onClick = onCancel) {
+            Text("Cancel")
+        }
+        OutlinedButton(
+            onClick = onSubmit,
+            enabled = draft.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Submit retry")
+        }
+    }
+}
+
+/**
+ * Retry feedback as its own section below the immutable original.
+ * Qualitative backend content only — no scores, comparisons, or labels.
+ */
+@Composable
+private fun RetryFeedbackContent(retry: Retry) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = "Retry Feedback",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        val feedback: RetryFeedback = retry.feedback ?: return
+        Text(
+            text = feedback.overall,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (feedback.whatWorked != null) {
+            Text(
+                text = "What worked: ${feedback.whatWorked}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        if (feedback.couldImprove != null) {
+            Text(
+                text = "Could improve: ${feedback.couldImprove}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        if (feedback.tryNextTime != null) {
+            Text(
+                text = "Try next time: ${feedback.tryNextTime}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        feedback.professionalCommunication?.forEach { point ->
+            Text(
+                text = "• $point",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
     }
 }
