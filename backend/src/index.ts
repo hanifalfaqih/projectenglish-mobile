@@ -12,6 +12,13 @@ import {
   createQwenFeedbackProviderConfig,
 } from "./feedback/provider.js";
 import { registerFeedbackRoutes } from "./feedback/routes.js";
+import { RetryRepository } from "./retry/repository.js";
+import { RetryService } from "./retry/service.js";
+import {
+  QwenRetryFeedbackProvider,
+  createQwenRetryFeedbackProviderConfig,
+} from "./retry/provider.js";
+import { registerRetryRoutes } from "./retry/routes.js";
 
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT) || 3001;
@@ -45,6 +52,20 @@ const feedbackService = new FeedbackService({
 });
 
 registerFeedbackRoutes(app, { service: feedbackService });
+
+const retryRepository = new RetryRepository(prisma);
+const retryProvider = new QwenRetryFeedbackProvider(
+  createQwenRetryFeedbackProviderConfig(),
+);
+const retryService = new RetryService({
+  conversationRepository: repository,
+  feedbackRepository,
+  retryRepository,
+  provider: retryProvider,
+  experienceProfiles,
+});
+
+registerRetryRoutes(app, { service: retryService });
 
 const start = async () => {
   try {
