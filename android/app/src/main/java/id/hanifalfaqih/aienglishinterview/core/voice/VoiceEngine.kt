@@ -92,5 +92,7 @@ interface VoiceSynthesizer {
 enum class VoicePhase {
     IDLE,
     LISTENING,
+    /** User pressed Stop; recognizer is flushing captured audio. No controls. */
+    FINALIZING,
     SPEAKING,
 }

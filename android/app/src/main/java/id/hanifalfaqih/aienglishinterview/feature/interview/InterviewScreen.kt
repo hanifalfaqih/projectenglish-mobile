@@ -174,6 +174,7 @@ fun InterviewScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
             VoicePhase.IDLE -> Unit
+            VoicePhase.FINALIZING -> Unit // Not used in InterviewScreen
         }
 
         if (viewModel.voiceError != null) {

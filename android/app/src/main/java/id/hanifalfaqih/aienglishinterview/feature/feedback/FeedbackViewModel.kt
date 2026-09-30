@@ -53,6 +53,17 @@ sealed interface AnswerRetryState {
     data class FeedbackFailed(val retry: Retry) : AnswerRetryState
     /** Submission failed before a usable artifact was returned. */
     data class Error(val message: String, val httpCode: Int? = null) : AnswerRetryState
+    /**
+     * Original question/answer is unavailable for retry (e.g., missing
+     * questionMessageId). Recording cannot resolve this; no Record button.
+     */
+    data class Unrecoverable(val message: String) : AnswerRetryState
+    /**
+     * Restore from persisted retry failed with a non-404 error. Distinct
+     * from a new submission error: the user can retry the restore, but
+     * should not be offered Record as if no retry existed.
+     */
+    data class RestoreFailed(val message: String, val httpCode: Int? = null) : AnswerRetryState
 }
 
 /**
@@ -87,7 +98,17 @@ class FeedbackViewModel(
     var voiceError by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * Capture duration in milliseconds. Updated while LISTENING, frozen at
+     * final value during FINALIZING. Display-only; does not alter the
+     * existing 55-second AudioCapture cap.
+     */
+    var captureElapsedMs by mutableStateOf(0L)
+        private set
+
     private var retryTarget: String? = null
+    private var captureTickerJob: kotlinx.coroutines.Job? = null
+    private var captureStartMs: Long = 0L
 
     init {
         load()
@@ -101,7 +122,14 @@ class FeedbackViewModel(
     private fun onRecognitionEvent(event: RecognitionEvent) {
         when (event) {
             is RecognitionEvent.FinalAudio -> {
+                // Freeze timer at final duration before transitioning out of FINALIZING
+                if (voicePhase == VoicePhase.FINALIZING) {
+                    captureTickerJob?.cancel()
+                    captureTickerJob = null
+                    captureElapsedMs = System.currentTimeMillis() - captureStartMs
+                }
                 voicePhase = VoicePhase.IDLE
+                captureElapsedMs = 0L
                 if (event.audio.isEmpty()) {
                     voiceError = "No audio recorded. Try again."
                     return
@@ -111,6 +139,9 @@ class FeedbackViewModel(
                 submitVoiceRetry(target, event.audio)
             }
             is RecognitionEvent.Error -> {
+                captureTickerJob?.cancel()
+                captureTickerJob = null
+                captureElapsedMs = 0L
                 voiceError = event.message
                 voicePhase = VoicePhase.IDLE
             }
@@ -123,7 +154,11 @@ class FeedbackViewModel(
             // Don't start voice input for ineligible items
             return
         }
-        if (voicePhase == VoicePhase.LISTENING) return
+        if (voicePhase == VoicePhase.LISTENING || voicePhase == VoicePhase.FINALIZING) return
+        
+        // Clean slate: clear previous error and reset timer
+        voiceError = null
+        captureElapsedMs = 0L
         
         // Check current entitlement state synchronously first
         when (val entitlement = monetization.premiumState.value) {
@@ -134,9 +169,10 @@ class FeedbackViewModel(
                 }
                 // Premium: open form and start listening immediately
                 practiceFormTarget = feedbackItem.answerMessageId
-                voiceError = null
                 retryTarget = feedbackItem.answerMessageId
                 voicePhase = VoicePhase.LISTENING
+                captureStartMs = System.currentTimeMillis()
+                startCaptureTicker()
                 recognizer?.startListening()
                 return
             }
@@ -150,9 +186,10 @@ class FeedbackViewModel(
                                 retryGateRequiresPurchase = true
                             } else {
                                 practiceFormTarget = feedbackItem.answerMessageId
-                                voiceError = null
                                 retryTarget = feedbackItem.answerMessageId
                                 voicePhase = VoicePhase.LISTENING
+                                captureStartMs = System.currentTimeMillis()
+                                startCaptureTicker()
                                 recognizer?.startListening()
                             }
                         }
@@ -170,14 +207,39 @@ class FeedbackViewModel(
         }
     }
 
+    private fun startCaptureTicker() {
+        captureTickerJob?.cancel()
+        captureTickerJob = viewModelScope.launch {
+            while (voicePhase == VoicePhase.LISTENING) {
+                kotlinx.coroutines.delay(500)
+                if (voicePhase == VoicePhase.LISTENING) {
+                    captureElapsedMs = System.currentTimeMillis() - captureStartMs
+                }
+            }
+        }
+    }
+
     fun finishVoiceInput() {
-        // Graceful stop: let FinalAudio flow through to submitVoiceRetry()
+        // Graceful stop: transition to FINALIZING, let FinalAudio flow through
+        if (voicePhase == VoicePhase.LISTENING) {
+            voicePhase = VoicePhase.FINALIZING
+            captureTickerJob?.cancel()
+            captureTickerJob = null
+            // Freeze timer at final duration
+            captureElapsedMs = System.currentTimeMillis() - captureStartMs
+        }
         recognizer?.stopListening()
         // Don't clear retryTarget or practiceFormTarget
     }
 
     fun cancelVoiceInput() {
+        // Cannot cancel during FINALIZING - user already committed
+        if (voicePhase == VoicePhase.FINALIZING) return
+        
         // Discard recording: clear state before FinalAudio arrives
+        captureTickerJob?.cancel()
+        captureTickerJob = null
+        captureElapsedMs = 0L
         retryTarget = null
         practiceFormTarget = null
         recognizer?.stopListening()
@@ -447,7 +509,7 @@ class FeedbackViewModel(
             val feedbackItem = feedback?.answerItems?.find { it.answerMessageId == target }
             val questionId = feedbackItem?.questionMessageId
             if (questionId == null) {
-                retryStates = retryStates + (target to AnswerRetryState.Error(
+                retryStates = retryStates + (target to AnswerRetryState.Unrecoverable(
                     message = "This answer is not available for retry.",
                 ))
                 return@launch
@@ -479,7 +541,7 @@ class FeedbackViewModel(
 
     /**
      * Loads an already-persisted retry without submitting. A 404 simply
-     * means no retry exists (Idle); anything else surfaces as Error.
+     * means no retry exists (Idle); anything else surfaces as RestoreFailed.
      */
     fun loadCurrentRetry(answerMessageId: String) {
         if (retryStates[answerMessageId] is AnswerRetryState.Submitting) return
@@ -495,7 +557,7 @@ class FeedbackViewModel(
                         answerMessageId to if (result.httpCode == 404) {
                             AnswerRetryState.Idle
                         } else {
-                            AnswerRetryState.Error(
+                            AnswerRetryState.RestoreFailed(
                                 message = result.message,
                                 httpCode = result.httpCode,
                             )

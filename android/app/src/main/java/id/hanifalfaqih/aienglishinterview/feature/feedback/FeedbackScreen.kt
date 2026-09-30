@@ -165,17 +165,19 @@ fun FeedbackScreen(
             is FeedbackUiState.Content -> {
                 FeedbackContent(
                     feedback = state.feedback,
-                    isPremium = isPremium,
+                    premiumState = premiumState,
                     retryStates = viewModel.retryStates,
                     practiceFormTarget = viewModel.practiceFormTarget,
                     voicePhase = viewModel.voicePhase,
                     voiceError = viewModel.voiceError,
+                    captureElapsedMs = viewModel.captureElapsedMs,
                     onGoPremium = onGoPremium,
                     onBack = onBack,
                     onRequestPractice = { item -> requestPracticeWithPermission(item) },
                     onClosePractice = { viewModel.cancelVoiceInput() },
                     onFinishRecording = { viewModel.finishVoiceInput() },
                     onRegenerateRetry = { item -> viewModel.regenerateRetry(item.answerMessageId) },
+                    onRestoreRetry = { item -> viewModel.loadCurrentRetry(item.answerMessageId) },
                     modifier = Modifier.weight(1f),
                 )
                 PracticeAgainRow(
@@ -244,19 +246,25 @@ private fun PracticeAgainRow(
 @Composable
 private fun FeedbackContent(
     feedback: Feedback,
-    isPremium: Boolean,
+    premiumState: PremiumState,
     retryStates: Map<String, AnswerRetryState>,
     practiceFormTarget: String?,
     voicePhase: VoicePhase,
     voiceError: String?,
+    captureElapsedMs: Long,
     onGoPremium: () -> Unit,
     onBack: () -> Unit,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
     onFinishRecording: () -> Unit,
     onRegenerateRetry: (AnswerFeedback) -> Unit,
+    onRestoreRetry: (AnswerFeedback) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isPremium = (premiumState as? PremiumState.Determined)?.isPremium == true
+    val isFree = premiumState is PremiumState.Determined && !premiumState.isPremium
+    val isChecking = premiumState is PremiumState.Loading
+    val isUnavailable = premiumState is PremiumState.Unavailable
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -278,6 +286,7 @@ private fun FeedbackContent(
         }
 
         if (isPremium) {
+            // Premium users see full feedback
             if (feedback.answerItems.isNotEmpty()) {
                 item {
                     Text(
@@ -296,10 +305,12 @@ private fun FeedbackContent(
                         formOpen = practiceFormTarget == item.answerMessageId,
                         voicePhase = if (practiceFormTarget == item.answerMessageId) voicePhase else VoicePhase.IDLE,
                         voiceError = if (practiceFormTarget == item.answerMessageId) voiceError else null,
+                        captureElapsedMs = if (practiceFormTarget == item.answerMessageId) captureElapsedMs else 0L,
                         onRequestPractice = onRequestPractice,
                         onClosePractice = onClosePractice,
                         onFinishRecording = onFinishRecording,
                         onRegenerateRetry = { onRegenerateRetry(item) },
+                        onRestoreRetry = { onRestoreRetry(item) },
                     )
                 }
             }
@@ -323,7 +334,8 @@ private fun FeedbackContent(
                     }
                 }
             }
-        } else {
+        } else if (isFree) {
+            // Free users see premium teaser + targeted practice teaser
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -377,6 +389,39 @@ private fun FeedbackContent(
                     }
                 }
             }
+        } else if (isChecking) {
+            // Checking entitlement - neutral state, no upsell
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        Text(
+                            text = "Checking your access…",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+        } else if (isUnavailable) {
+            // Unavailable entitlement - neutral error state, no upsell
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Unable to check your access",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            text = "Please check your internet connection and try again.",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
         }
 
         item {
@@ -401,10 +446,12 @@ private fun AnswerFeedbackCard(
     formOpen: Boolean,
     voicePhase: VoicePhase,
     voiceError: String?,
+    captureElapsedMs: Long,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
     onFinishRecording: () -> Unit,
     onRegenerateRetry: () -> Unit,
+    onRestoreRetry: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -442,10 +489,12 @@ private fun AnswerFeedbackCard(
                     formOpen = formOpen,
                     voicePhase = voicePhase,
                     voiceError = voiceError,
+                    captureElapsedMs = captureElapsedMs,
                     onPracticeThis = { onRequestPractice(item) },
                     onCancel = onClosePractice,
                     onFinishRecording = onFinishRecording,
                     onRegenerate = onRegenerateRetry,
+                    onRestore = onRestoreRetry,
                 )
             }
         }
@@ -463,10 +512,12 @@ private fun TargetedPracticeSection(
     formOpen: Boolean,
     voicePhase: VoicePhase,
     voiceError: String?,
+    captureElapsedMs: Long,
     onPracticeThis: () -> Unit,
     onCancel: () -> Unit,
     onFinishRecording: () -> Unit,
     onRegenerate: () -> Unit,
+    onRestore: () -> Unit,
 ) {
     Column(
         modifier = Modifier.padding(top = 8.dp),
@@ -503,14 +554,33 @@ private fun TargetedPracticeSection(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            is AnswerRetryState.Unrecoverable -> {
+                Text(
+                    text = retryState.message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                // No Record button - this cannot be retried
+            }
+            is AnswerRetryState.RestoreFailed -> {
+                Text(
+                    text = retryState.message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton(onClick = onRestore) {
+                    Text("Try Again")
+                }
+            }
             is AnswerRetryState.Idle -> Unit
         }
         // Voice-only retry: no text draft, just record and submit
-        if (retryState !is AnswerRetryState.Submitting) {
+        if (retryState !is AnswerRetryState.Submitting && retryState !is AnswerRetryState.Unrecoverable && retryState !is AnswerRetryState.RestoreFailed) {
             if (formOpen) {
                 RetryInputForm(
                     voicePhase = voicePhase,
                     voiceError = voiceError,
+                    captureElapsedMs = captureElapsedMs,
                     onCancel = onCancel,
                     onStartRecording = onPracticeThis,
                     onStopRecording = onFinishRecording,
@@ -583,10 +653,12 @@ private fun RetryAffordancePreview() {
             formOpen = false,
             voicePhase = VoicePhase.IDLE,
             voiceError = null,
+            captureElapsedMs = 0L,
             onRequestPractice = {},
             onClosePractice = {},
             onFinishRecording = {},
             onRegenerateRetry = {},
+            onRestoreRetry = {},
         )
     }
 }
@@ -601,10 +673,12 @@ private fun RetryFeedbackPreview() {
             formOpen = false,
             voicePhase = VoicePhase.IDLE,
             voiceError = null,
+            captureElapsedMs = 0L,
             onRequestPractice = {},
             onClosePractice = {},
             onFinishRecording = {},
             onRegenerateRetry = {},
+            onRestoreRetry = {},
         )
     }
 }
@@ -613,6 +687,7 @@ private fun RetryFeedbackPreview() {
 private fun RetryInputForm(
     voicePhase: VoicePhase,
     voiceError: String?,
+    captureElapsedMs: Long,
     onCancel: () -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
@@ -621,11 +696,22 @@ private fun RetryInputForm(
         Text(
             text = when (voicePhase) {
                 VoicePhase.LISTENING -> "Listening… (tap Stop when done)"
+                VoicePhase.FINALIZING -> "Finishing your answer…"
                 VoicePhase.SPEAKING -> "Processing…"
                 VoicePhase.IDLE -> "Speak your answer"
             },
             style = MaterialTheme.typography.bodyMedium,
         )
+        // Timer display - show during LISTENING and FINALIZING
+        if (voicePhase == VoicePhase.LISTENING || voicePhase == VoicePhase.FINALIZING) {
+            val elapsedSeconds = (captureElapsedMs / 1000).toInt()
+            val maxSeconds = 55
+            Text(
+                text = "${elapsedSeconds}s / ${maxSeconds}s",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (voiceError != null) {
             Text(
                 text = voiceError,
@@ -633,42 +719,46 @@ private fun RetryInputForm(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            when (voicePhase) {
-                VoicePhase.LISTENING -> {
-                    OutlinedButton(
-                        onClick = onStopRecording,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Stop")
-                    }
-                }
-                VoicePhase.SPEAKING -> {
-                    OutlinedButton(
-                        onClick = {},
-                        modifier = Modifier.weight(1f),
-                        enabled = false,
-                    ) {
-                        Text("Processing…")
-                    }
-                }
-                VoicePhase.IDLE -> {
-                    OutlinedButton(
-                        onClick = onStartRecording,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Record")
-                    }
-                }
-            }
-            TextButton(
-                onClick = onCancel,
-                enabled = voicePhase != VoicePhase.SPEAKING,
+        // FINALIZING phase: no controls shown
+        if (voicePhase != VoicePhase.FINALIZING) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("Cancel")
+                when (voicePhase) {
+                    VoicePhase.LISTENING -> {
+                        OutlinedButton(
+                            onClick = onStopRecording,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Stop")
+                        }
+                    }
+                    VoicePhase.SPEAKING -> {
+                        OutlinedButton(
+                            onClick = {},
+                            modifier = Modifier.weight(1f),
+                            enabled = false,
+                        ) {
+                            Text("Processing…")
+                        }
+                    }
+                    VoicePhase.IDLE -> {
+                        OutlinedButton(
+                            onClick = onStartRecording,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Record")
+                        }
+                    }
+                    VoicePhase.FINALIZING -> { /* No button in FINALIZING */ }
+                }
+                TextButton(
+                    onClick = onCancel,
+                    enabled = voicePhase != VoicePhase.SPEAKING,
+                ) {
+                    Text("Cancel")
+                }
             }
         }
     }
