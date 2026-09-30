@@ -102,8 +102,10 @@ class PlatformVoiceSynthesizer(
         }
     }
 
-    override fun speak(text: String) {
+    override fun speak(text: String, audio: ByteArray?) {
         if (released) return
+        // Platform synthesis always renders text; backend audio (if any) is
+        // ignored here — BackendAudioPlayer owns byte playback.
         if (!ready) {
             _events.tryEmit(SynthesisEvent.Error("Speech output is not ready yet."))
             return

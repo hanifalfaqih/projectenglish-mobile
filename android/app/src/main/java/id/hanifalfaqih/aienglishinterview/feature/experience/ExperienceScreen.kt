@@ -25,51 +25,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.hanifalfaqih.aienglishinterview.ui.theme.AIEnglishInterviewTheme
-import java.io.IOException
-
-private fun displayName(
-    resolver: android.content.ContentResolver,
-    uri: Uri,
-): String {
-    return try {
-        resolver.query(uri, null, null, null, null)?.use { cursor ->
-            val index = cursor.getColumnIndex(
-                android.provider.OpenableColumns.DISPLAY_NAME,
-            )
-            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
-        } ?: "resume.pdf"
-    } catch (e: SecurityException) {
-        "resume.pdf"
-    }
-}
-private fun readPickedPdf(
-    resolver: android.content.ContentResolver,
-    uri: Uri?,
-    maxBytes: Int = MAX_RESUME_BYTES,
-): Result<ByteArray?> {
-    if (uri == null) return Result.success(null)
-    return try {
-        resolver.openInputStream(uri)?.use { stream ->
-            val out = java.io.ByteArrayOutputStream()
-            val buf = ByteArray(32 * 1024)
-            var total = 0
-            while (true) {
-                val n = stream.read(buf)
-                if (n < 0) break
-                total += n
-                if (total > maxBytes) {
-                    return Result.failure(IOException("too_large"))
-                }
-                out.write(buf, 0, n)
-            }
-            Result.success(out.toByteArray())
-        } ?: Result.failure(IOException("unreadable"))
-    } catch (e: IOException) {
-        Result.failure(e)
-    } catch (e: SecurityException) {
-        Result.failure(IOException("unreadable", e))
-    }
-}
 
 /**
  * Minimal functional My Experience form: one entry, then Continue creates
@@ -102,7 +57,7 @@ fun ExperienceScreen(
         ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult // cancellation: stay put
-        val result = readPickedPdf(context.contentResolver, uri)
+        val result = readPickedFile(context.contentResolver, uri, MAX_RESUME_BYTES)
         val bytes = result.getOrNull()
         if (bytes == null) {
             viewModel.onUnreadableFile()

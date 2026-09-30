@@ -28,14 +28,20 @@ class ExperienceRepository(
     }
 
     /**
-     * Resume parse: uploads PDF bytes as multipart `file` and maps the
+     * Resume parse: uploads document bytes as multipart `file` and maps the
      * response items (same contract as experience items) to domain models.
+     * MIME defaults to PDF; DOCX is sent with its own type so the backend
+     * can route it (unsupported types surface as backend errors).
      */
-    suspend fun parseResume(pdfBytes: ByteArray, filename: String): ApiResult<List<ExperienceItem>> {
+    suspend fun parseResume(
+        pdfBytes: ByteArray,
+        filename: String,
+        mimeType: String = "application/pdf",
+    ): ApiResult<List<ExperienceItem>> {
         val part = MultipartBody.Part.createFormData(
             "file",
             filename.ifBlank { "resume.pdf" },
-            pdfBytes.toRequestBody("application/pdf".toMediaType()),
+            pdfBytes.toRequestBody(mimeType.toMediaType()),
         )
         return when (val result = apiCall { api.parseResume(part) }) {
             is ApiResult.Success -> ApiResult.Success(result.value.items.map { it.toDomain() })

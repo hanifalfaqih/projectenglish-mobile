@@ -7,6 +7,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
+import java.util.concurrent.TimeUnit
 
 /**
  * Builds the shared Retrofit instance. Knows transports and JSON only —
@@ -31,6 +32,13 @@ object RetrofitFactory {
             }
         }
         val client = OkHttpClient.Builder()
+            // Voice-turn responses bundle server-side ASR + LLM + TTS, so
+            // the single shared client allows generous bounded waits: 10s
+            // connect, 30s upload (audio), 60s read/call end-to-end.
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS)
             .addInterceptor(logging)
             .build()
         return Retrofit.Builder()

@@ -26,6 +26,11 @@ class MainActivity : ComponentActivity() {
                     AppNavHost(
                         navController = rememberNavController(),
                         modifier = Modifier.padding(innerPadding),
+                        // DEBUG-only entry point (see DebugVerificationActivity
+                        // in src/debug): null in all production flows.
+                        startDestination = intent.getStringExtra(
+                            "debug_start_destination",
+                        ),
                     )
                 }
             }

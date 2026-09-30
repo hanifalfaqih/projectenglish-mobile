@@ -46,11 +46,13 @@ class FakeVoiceSynthesizer(
     override val events: SharedFlow<SynthesisEvent> = _events.asSharedFlow()
 
     val spoken = mutableListOf<String>()
+    val spokenAudio = mutableListOf<ByteArray?>()
     var stopCalls = 0
         private set
 
-    override fun speak(text: String) {
+    override fun speak(text: String, audio: ByteArray?) {
         spoken.add(text)
+        spokenAudio.add(audio)
         if (autoComplete) {
             _events.tryEmit(SynthesisEvent.Done)
         }

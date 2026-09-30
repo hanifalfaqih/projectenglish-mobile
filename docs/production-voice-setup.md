@@ -1,60 +1,81 @@
-# Production Voice Setup (Android)
+# Production Voice Setup (Android + Backend)
 
-This document describes how to configure the two production voice
-providers. It is a setup runbook, not code: no credential lives in this
-repository.
+This document describes the production voice architecture. It is a setup
+runbook, not code: no credential lives in this repository or the APK.
 
-## Speech-to-text: Google Cloud Speech-to-Text (V1 synchronous REST)
+## Architecture
 
-1. Create (or reuse) a Google Cloud project and **enable the
-   Speech-to-Text API** on it.
-2. Create an **API key** (APIs & Services → Credentials → Create credentials
-   → API key). This is a client key, not a service-account secret. Never
-   create or embed service-account JSON for the Android app.
-3. Restrict the key twice:
-   - **API restriction**: Speech-to-Text API only.
-   - **Android application restriction**: package
-     `id.hanifalfaqih.aienglishinterview` plus the SHA-1 fingerprints of
-     the debug certificate (local development) and, before any release,
-     the release signing certificate.
-4. Supply the key locally, never committed:
-   `~/.gradle/gradle.properties` → `googleCloudSpeechApiKey=AIza…`
-   (build reads it into `BuildConfig.GOOGLE_CLOUD_SPEECH_API_KEY`;
-   empty default keeps the recognizer inert with a clear error).
-5. In the Google Cloud console, set **quota/billing monitoring** (alerts on
-   usage and spend) for the Speech-to-Text API.
+```
+Android microphone (AudioRecord, 16 kHz mono 16-bit PCM)
+  → POST /conversations/:id/voice-turn (multipart `audio` + `clientTurnId`)
+  → backend: Qwen3-ASR-Flash transcript
+  → backend: existing conversation turn pipeline (transcript = message)
+  → backend: Qwen TTS synthesis of assistantMessage
+  → response: transcript + assistant/state/status/closing + PCM audio
+  → Android AudioTrack playback
+```
 
-### Security model (read carefully)
+Speech recognition AND synthesis run server-side. The Android client never
+holds Qwen credentials and performs no STT/TTS networking of its own.
 
-An Android API key is **not a secret**: anything in the APK can
-theoretically be extracted. The protection is layered instead:
+## Speech-to-text: Qwen-Audio-3.0-ASR-Flash (backend)
 
-- Android application restriction (package + SHA-1) so the key is only
-  usable from this app's signatures;
-- API restriction so a leaked key cannot call other Google services;
-- quota caps and billing alerts bounding abuse;
-- no service-account credentials anywhere near the client.
+Model `qwen-audio-3.0-asr-flash` over the native DashScope
+multimodal-generation endpoint
+(`{ASR_BASE_URL}/api/v1/services/aigc/multimodal-generation/generation`,
+default shared domain `https://dashscope-intl.aliyuncs.com`, overridable
+per workspace/region). Request: WAV base64 data URI, `format: wav`,
+`sample_rate: "16000"`, `language_hints: ["en"]`, `X-DashScope-SSE:
+disable`. Response transcript at `output.text` (fallback
+`output.sentence.text`); blank means no-speech (HTTP 422, no turn).
 
-Do not describe this key as a secret. Do not add service-account
-credentials, backend token brokers, or key-proxy endpoints: the approved
-architecture deliberately has no backend voice surface.
+## Speech-to-speech output: Qwen TTS (backend)
 
-## Text-to-speech: Android framework TextToSpeech
+- Model: `qwen-audio-3.0-tts-flash` (override: `TTS_MODEL_ID`)
+- Voice: `loongjohn` — calm, friendly American English male (override:
+  `TTS_VOICE_ID`)
+- Protocol: Model Studio WebSocket, one session per utterance
+  (`TTS_WS_URL`, default
+  `wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference`)
+- Output: PCM 16-bit mono 24 kHz (override timeout: `TTS_TIMEOUT_MS`)
+- TTS runs strictly AFTER the conversation turn commits. Synthesis
+  failure degrades only the audio payload (`audio: null` + `audioError`);
+  the turn is never rolled back.
 
-No configuration, key, network, or dependency. The app requests the US
-English voice at runtime; devices without an English voice report a clear
-error through the normal voice-error path.
+## Backend environment
 
-## Conservative development usage
+| Variable | Purpose |
+|---|---|
+| `DASHSCOPE_API_KEY` | Server-side Qwen key for ASR, LLM, and TTS (required) |
+| `ASR_MODEL_ID` | Default `qwen3-asr-flash` |
+| `TTS_MODEL_ID` | Default `qwen-audio-3.0-tts-flash` |
+| `TTS_VOICE_ID` | Default `loongjohn` |
+| `TTS_WS_URL` | Default intl inference endpoint above |
+| `TTS_TIMEOUT_MS` | Default 60000 |
 
-Speech-to-Text V1 pricing (per official pricing at integration time)
-includes a limited free allowance; verify current terms in the console
-before heavy use. As a planning envelope for this project:
+## Android playback
 
-- one interview ≈ 5–8 answers × 30–60 s ≈ 3–8 audio minutes;
-- ten development interviews ≈ 30–80 audio minutes;
-- one demo recording ≈ 8 audio minutes.
+`BackendAudioPlayer` plays the response PCM via AudioTrack (24 kHz, mono,
+16-bit; validated before playback). If `audio` is absent, the app falls
+back to on-device TextToSpeech and shows a recoverable notice. The
+platform synthesizer remains as fallback/dev diagnostic.
 
-Keep validation sessions tight, prefer short answers while iterating, and
-watch the console usage graph. Never encode billing assumptions in app
-logic; there is intentionally no local usage meter.
+## Token Plan / credential caveat
+
+Qwen credentials are backend-only and never ship in the app. Token Plan
+documentation treats its keys/endpoints separately from backend service
+usage: if the TTS WebSocket handshake rejects our credentials (401/403),
+that is an account/service-compatibility matter, not an implementation
+bug — preserve the integration and switch configuration. Do not assume
+any fixed mapping between Token Plan credits and ASR/TTS requests;
+verify usage in the console.
+
+## Physical-device testing
+
+- Canonical workflow: `./gradlew devInstall` (from `android/`). It applies
+  `adb reverse tcp:3001 tcp:3001` and installs the debug APK, so the app
+  reaches the Mac backend at `http://127.0.0.1:3001/` on emulator and
+  physical device alike. Fails clearly when no device is connected.
+- Alternative LAN-IP setup: build with `-PapiBaseUrl=<lan-url>/`.
+- Tap mic → speak → stop → transcript uploads → spoken reply plays.
+- Microphone permission is requested on first mic tap only.

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- DEBUG ONLY: verification harness entry point. Merged into debug
+         builds alone; the production manifest is untouched. -->
+    <application>
+        <activity
+            android:name=".debug.DebugVerificationActivity"
+            android:exported="true" />
+    </application>
+</manifest>

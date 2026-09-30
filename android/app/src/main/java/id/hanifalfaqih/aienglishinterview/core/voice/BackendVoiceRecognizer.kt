@@ -19,25 +19,17 @@ import kotlinx.coroutines.withContext
 
 /**
  * Production [VoiceRecognizer]: captures microphone PCM with [AudioCapture]
- * (Android [AudioRecord] in production), applies a lightweight
- * speech-then-silence end detector, and transcribes the utterance with
- * [SttTransport] (Google Cloud STT synchronous REST in production).
+ * and emits it as [RecognitionEvent.FinalAudio] for server-side
+ * transcription. The transcript — and therefore the turn — comes back from
+ * the backend voice-turn endpoint, so this recognizer performs no network
+ * STT itself and holds no provider credentials.
  *
- * Emits at most one [RecognitionEvent.Final] per session; a [sessionId]
- * guard drops stale completions from superseded or cancelled sessions.
- * Synchronous REST yields no partials — none are fabricated.
- *
- * AudioRecord itself is the only untestable seam and sits behind
- * [AudioCapture]; orchestration (silence end, cap, cancellation,
- * error mapping) is fully deterministic under fakes.
+ * Session semantics (silence end, 55 s cap, graceful stop vs discard,
+ * stale-session guard, single emission) mirror the previously validated
+ * capture behavior.
  */
-class GoogleCloudVoiceRecognizer(
-    private val apiKey: String,
+class BackendVoiceRecognizer(
     private val captureFactory: () -> AudioCapture = { AndroidAudioCapture() },
-    private val identity: AppIdentityProvider? = null,
-    private val transportFactory: (String) -> SttTransport = { key ->
-        GoogleSttTransport(key, identity = identity)
-    },
     scope: CoroutineScope? = null,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : VoiceRecognizer {
@@ -56,15 +48,6 @@ class GoogleCloudVoiceRecognizer(
     @Synchronized
     override fun startListening() {
         if (released || sessionJob?.isActive == true) return
-        if (apiKey.isBlank()) {
-            _events.tryEmit(
-                RecognitionEvent.Error(
-                    "Speech recognition is not configured. Add a Google Cloud " +
-                        "Speech API key (see docs/production-voice-setup.md).",
-                ),
-            )
-            return
-        }
         sessionId += 1
         finishRequested = false
         val id = sessionId
@@ -74,8 +57,8 @@ class GoogleCloudVoiceRecognizer(
     }
 
     /**
-     * Graceful stop: the captured audio is still transcribed. Cancellation
-     * (release, or a superseding session) discards it instead.
+     * Graceful stop: the captured audio is still delivered for upload.
+     * Cancellation (release, or a superseding session) discards it instead.
      */
     @Synchronized
     override fun stopListening() {
@@ -105,19 +88,7 @@ class GoogleCloudVoiceRecognizer(
                 emitIfCurrent(id, RecognitionEvent.Error("No speech detected. Try again."))
                 return
             }
-            val transport = transportFactory(apiKey)
-            val outcome = try {
-                transport.transcribe(pcm)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                SttOutcome.Failure("Speech recognition failed. Please try again.")
-            }
-            when (outcome) {
-                is SttOutcome.Transcript -> emitIfCurrent(id, RecognitionEvent.Final(outcome.text))
-                is SttOutcome.NoSpeech ->
-                    emitIfCurrent(id, RecognitionEvent.Error("No speech detected. Try again."))
-                is SttOutcome.Failure -> emitIfCurrent(id, RecognitionEvent.Error(outcome.message))
-            }
+            emitIfCurrent(id, RecognitionEvent.FinalAudio(pcm))
         } finally {
             withContext(io) {
                 try {

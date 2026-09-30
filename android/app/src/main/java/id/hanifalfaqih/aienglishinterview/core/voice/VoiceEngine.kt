@@ -20,6 +20,19 @@ sealed interface RecognitionEvent {
     /** Completed utterance. Submitted exactly once by the consumer. */
     data class Final(val text: String) : RecognitionEvent
 
+    /**
+     * Completed utterance as captured audio. The consumer uploads it for
+     * server-side transcription; the returned transcript then flows through
+     * the normal turn path exactly once. Kept alongside [Final] (used by
+     * fakes and text-equivalent doubles) without changing consumers.
+     */
+    data class FinalAudio(val audio: ByteArray) : RecognitionEvent {
+        override fun equals(other: Any?): Boolean =
+            other is FinalAudio && audio.contentEquals(other.audio)
+
+        override fun hashCode(): Int = audio.contentHashCode()
+    }
+
     /** Recognition failed; listening has stopped. */
     data class Error(val message: String) : RecognitionEvent
 }
@@ -51,8 +64,14 @@ sealed interface SynthesisEvent {
 }
 
 interface VoiceSynthesizer {
-    /** Speak the text, cancelling any in-progress utterance. */
-    fun speak(text: String)
+    /**
+     * Speak the text, cancelling any in-progress utterance. When backend
+     * audio bytes are provided, implementations that can play them SHOULD
+     * play the audio (it matches the text exactly); implementations without
+     * audio playback fall back to synthesizing [text]. The default ignores
+     * audio, preserving existing callers.
+     */
+    fun speak(text: String, audio: ByteArray? = null)
 
     /** Cancel any in-progress utterance. */
     fun stop()

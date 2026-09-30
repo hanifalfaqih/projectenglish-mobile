@@ -11,10 +11,14 @@ import id.hanifalfaqih.aienglishinterview.data.remote.CreateExperienceProfileRes
 import id.hanifalfaqih.aienglishinterview.data.remote.ExperienceItemDto
 import id.hanifalfaqih.aienglishinterview.data.remote.FeedbackDto
 import id.hanifalfaqih.aienglishinterview.data.remote.GetConversationResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.OpeningResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.SubmitRetryRequestDto
+import id.hanifalfaqih.aienglishinterview.data.remote.RetryResponseDto
 import id.hanifalfaqih.aienglishinterview.data.remote.InterviewApi
 import id.hanifalfaqih.aienglishinterview.data.remote.ResumeParseResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.VoiceTurnResponse
 import id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository
 import id.hanifalfaqih.aienglishinterview.data.repository.ExperienceRepository
 import java.io.IOException
@@ -87,11 +91,37 @@ private class ResumeFakeApi(
 
     override suspend fun sendTurn(conversationId: String, body: SendTurnRequest): SendTurnResponse =
         throw UnsupportedOperationException()
+    override suspend fun getOpening(conversationId: String): OpeningResponse =
+        throw UnsupportedOperationException()
+
+    override suspend fun submitRetry(
+        conversationId: String,
+        body: SubmitRetryRequestDto,
+    ): retrofit2.Response<RetryResponseDto> =
+        throw UnsupportedOperationException()
+
+    override suspend fun getCurrentRetry(
+        conversationId: String,
+        answerMessageId: String,
+    ): RetryResponseDto = throw UnsupportedOperationException()
+
+    override suspend fun regenerateRetryFeedback(
+        conversationId: String,
+        answerMessageId: String,
+    ): RetryResponseDto = throw UnsupportedOperationException()
+
+
     override suspend fun getConversation(conversationId: String): GetConversationResponse =
         throw UnsupportedOperationException()
     override suspend fun generateFeedback(conversationId: String): Response<FeedbackDto> =
         throw UnsupportedOperationException()
     override suspend fun getFeedback(conversationId: String): FeedbackDto =
+        throw UnsupportedOperationException()
+    override suspend fun sendVoiceTurn(
+        conversationId: String,
+        audio: MultipartBody.Part,
+        clientTurnId: okhttp3.RequestBody,
+    ): VoiceTurnResponse =
         throw UnsupportedOperationException()
 }
 

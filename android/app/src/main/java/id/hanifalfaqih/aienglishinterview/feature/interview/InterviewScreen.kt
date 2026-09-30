@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,13 +16,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -43,17 +42,23 @@ private class InterviewViewModelFactory(
     private val conversationId: String,
     private val recognizer: VoiceRecognizer? = null,
     private val synthesizer: VoiceSynthesizer? = null,
+    private val audioPlayer: VoiceSynthesizer? = null,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return InterviewViewModel(conversationId, recognizer = recognizer, synthesizer = synthesizer) as T
+        return InterviewViewModel(
+            conversationId,
+            recognizer = recognizer,
+            synthesizer = synthesizer,
+            audioPlayer = audioPlayer,
+        ) as T
     }
 }
 
 /**
- * Voice interview screen. The microphone is the primary interaction once a
- * voice provider is wired; until then it stays disabled with a pending
- * notice. The DEV text field remains only as a backend-contract bridge.
+ * Voice-first interview screen. AI speaks first: on entry the interviewer
+ * opening is generated and auto-played; the microphone ("Tap to speak")
+ * stays disabled until it finishes.
  */
 @Composable
 fun InterviewScreen(
@@ -63,15 +68,22 @@ fun InterviewScreen(
     modifier: Modifier = Modifier,
     recognizer: VoiceRecognizer? = null,
     synthesizer: VoiceSynthesizer? = null,
+    audioPlayer: VoiceSynthesizer? = null,
     viewModel: InterviewViewModel = viewModel(
-        factory = InterviewViewModelFactory(conversationId, recognizer, synthesizer),
+        factory = InterviewViewModelFactory(conversationId, recognizer, synthesizer, audioPlayer),
     ),
 ) {
     val context = LocalContext.current
-    var draft by remember { mutableStateOf("") }
+    var lastMicTapMs by remember { mutableLongStateOf(0L) }
 
     DisposableEffect(conversationId) {
         onDispose { viewModel.releaseVoice() }
+    }
+
+    // AI-first lifecycle: the interviewer speaks first. Guarded inside the
+    // ViewModel (plus server-side replay), so re-entry is safe.
+    LaunchedEffect(conversationId) {
+        viewModel.startOpening()
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -86,6 +98,14 @@ fun InterviewScreen(
 
     fun onMicTap() {
         if (!viewModel.voiceAvailable || viewModel.isClosed) return
+        // Bounce guard: a duplicated tap event (observed via adb/emulator
+        // input) arriving milliseconds after a stop would otherwise cancel
+        // and instantly restart recording, stranding a phantom session.
+        // Human taps are far slower than this window; the stale-session
+        // guards remain the backstop.
+        val now = android.os.SystemClock.uptimeMillis()
+        if (!shouldAcceptMicTap(lastMicTapMs, now)) return
+        lastMicTapMs = now
         val granted = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO,
@@ -104,6 +124,7 @@ fun InterviewScreen(
     val micEnabled = viewModel.voiceAvailable &&
         !viewModel.isClosed &&
         !viewModel.sending &&
+        !viewModel.opening &&
         viewModel.voicePhase != VoicePhase.SPEAKING
 
     Column(
@@ -136,10 +157,18 @@ fun InterviewScreen(
         }
 
         when (viewModel.voicePhase) {
-            VoicePhase.LISTENING -> Text(
-                text = "Listening… ${viewModel.heardText}",
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            VoicePhase.LISTENING -> {
+                Text(
+                    text = "Listening… (55s max — tap Stop when done)",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (viewModel.heardText.isNotBlank()) {
+                    Text(
+                        text = viewModel.heardText,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
             VoicePhase.SPEAKING -> Text(
                 text = "Interviewer speaking…",
                 style = MaterialTheme.typography.bodyMedium,
@@ -152,6 +181,13 @@ fun InterviewScreen(
                 text = viewModel.voiceError ?: "",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+
+        if (viewModel.voiceNotice != null) {
+            Text(
+                text = viewModel.voiceNotice ?: "",
+                style = MaterialTheme.typography.bodySmall,
             )
         }
 
@@ -177,7 +213,11 @@ fun InterviewScreen(
 
         if (viewModel.isClosed) {
             Text(text = "Interview complete.", style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onCompleteInterview, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onCompleteInterview,
+                enabled = viewModel.canComplete,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Complete Interview")
             }
         }
@@ -188,9 +228,25 @@ fun InterviewScreen(
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            TextButton(onClick = { viewModel.retry() }) {
+            TextButton(
+                onClick = {
+                    if (viewModel.needsOpeningRetry) {
+                        viewModel.retryOpening()
+                    } else {
+                        viewModel.retry()
+                    }
+                },
+            ) {
                 Text("Retry")
             }
+        }
+
+        if (viewModel.opening) {
+            Text(
+                text = "Preparing your interview…",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            CircularProgressIndicator()
         }
 
         if (viewModel.sending) {
@@ -206,33 +262,15 @@ fun InterviewScreen(
                 Text(
                     when {
                         !viewModel.voiceAvailable -> "Voice engine pending"
+                        viewModel.opening -> "Preparing interview…"
                         viewModel.voicePhase == VoicePhase.LISTENING -> "Stop listening"
                         else -> "Tap to speak"
                     },
                 )
             }
 
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                label = { Text("DEV answer input (voice comes later)") },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !viewModel.sending,
-                minLines = 2,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onBack) {
-                    Text("Back")
-                }
-                Button(
-                    onClick = {
-                        viewModel.send(draft)
-                        draft = ""
-                    },
-                    enabled = !viewModel.sending && draft.isNotBlank(),
-                ) {
-                    Text("Send")
-                }
+            OutlinedButton(onClick = onBack) {
+                Text("Back")
             }
         } else {
             OutlinedButton(onClick = onBack) {
@@ -253,3 +291,10 @@ private fun InterviewScreenPreview() {
         )
     }
 }
+
+/** Minimum gap between accepted microphone taps. */
+internal const val MIC_TAP_DEBOUNCE_MS = 300L
+
+/** Pure mic-tap debounce decision, unit-tested below. */
+internal fun shouldAcceptMicTap(lastTapMs: Long, nowMs: Long): Boolean =
+    nowMs - lastTapMs >= MIC_TAP_DEBOUNCE_MS

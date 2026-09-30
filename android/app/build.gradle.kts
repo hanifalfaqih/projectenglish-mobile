@@ -10,15 +10,23 @@ android {
         version = release(37)
     }
 
-    // Optional local override, e.g. in ~/.gradle/gradle.properties:
-    //   revenueCatApiKey=test_...
+    // Public RevenueCat SDK key, supplied externally (e.g. in
+    // ~/.gradle/gradle.properties as `revenueCatApiKey=test_...`). Never
+    // commit a key; empty leaves the SDK unconfigured and the paywall
+    // reports unavailable.
     val revenueCatKey: String = providers.gradleProperty("revenueCatApiKey").getOrElse("")
-    // Google Cloud Speech-to-Text API key (Android-restricted, see
-    // docs/production-voice-setup.md). Supply via ~/.gradle/gradle.properties
-    // as `googleCloudSpeechApiKey=AIza...` — never commit a key. Empty means
-    // the recognizer reports unconfigured and makes no network requests.
-    val googleCloudSpeechApiKey: String =
-        providers.gradleProperty("googleCloudSpeechApiKey").getOrElse("")
+    // Debug uses the dev-machine loopback so one topology serves emulator
+    // and physical devices alike (device 127.0.0.1:3001 -> `adb reverse`
+    // -> Mac localhost:3001; `./gradlew devInstall` sets this up).
+    // Override for LAN-IP setups: -PapiBaseUrl=http://<mac-lan-ip>:3001/
+    // or apiBaseUrl in ~/.gradle/gradle.properties. No machine IPs in source.
+    val debugApiBaseUrl: String =
+        providers.gradleProperty("apiBaseUrl").getOrElse("http://127.0.0.1:3001/")
+    // WARNING: historical dev placeholder, not a production endpoint
+    // (10.0.2.2 is the emulator loopback). Point release at the deployed
+    // backend before shipping.
+    val releaseApiBaseUrl: String =
+        providers.gradleProperty("apiBaseUrl").getOrElse("http://10.0.2.2:3001/")
 
     defaultConfig {
         applicationId = "id.hanifalfaqih.aienglishinterview"
@@ -32,22 +40,13 @@ android {
 
     buildTypes {
         debug {
-            // Emulator loopback to a backend running on the dev machine.
-            // Physical device: use the machine's LAN IP instead.
-            // Release: point at the deployed backend before shipping.
-            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:3001/\"")
-            // Public RevenueCat SDK key (Test Store key for debug). Supply via
-            // ~/.gradle/gradle.properties as `revenueCatApiKey=test_...` — never
-            // commit a key. Empty means the SDK stays unconfigured and the
-            // paywall reports unavailable.
+            buildConfigField("String", "API_BASE_URL", "\"${debugApiBaseUrl}\"")
+            // Test Store key for debug; release uses the Play public key.
             buildConfigField("String", "REVENUECAT_API_KEY", "\"${revenueCatKey}\"")
-            buildConfigField("String", "GOOGLE_CLOUD_SPEECH_API_KEY", "\"${googleCloudSpeechApiKey}\"")
         }
         release {
-            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:3001/\"")
-            // Release must use the Google Play public SDK key, same mechanism.
+            buildConfigField("String", "API_BASE_URL", "\"${releaseApiBaseUrl}\"")
             buildConfigField("String", "REVENUECAT_API_KEY", "\"${revenueCatKey}\"")
-            buildConfigField("String", "GOOGLE_CLOUD_SPEECH_API_KEY", "\"${googleCloudSpeechApiKey}\"")
             optimization {
                 enable = false
             }
@@ -90,3 +89,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+// Local development workflow (adb reverse + install); implementation lives
+// in gradle/dev-install.gradle.kts to keep this file declarative.
+apply(from = rootProject.file("gradle/dev-install.gradle.kts"))

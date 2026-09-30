@@ -9,6 +9,20 @@ package id.hanifalfaqih.aienglishinterview.navigation
  * `POST /conversations` response.
  */
 object Routes {
+    const val WELCOME = "welcome"
+
+    const val MY_EXPERIENCE = "my_experience"
+
+    const val EXPERIENCE_TYPE = "experience_type"
+
+    const val MANUAL_FORM = "manual_form"
+
+    const val IMPORT_RESUME = "import_resume"
+
+    const val REVIEW_EXPERIENCES = "review_experiences"
+
+    const val EXPERIENCE_CONFIRMATION = "experience_confirmation"
+
     const val EXPERIENCE = "experience"
 
     const val REVIEW = "review"
@@ -19,8 +33,11 @@ object Routes {
 
     const val INTERVIEW = "interview/{$ARG_CONVERSATION_ID}"
     const val FEEDBACK = "feedback/{$ARG_CONVERSATION_ID}"
+    const val COMPLETION = "completion/{$ARG_CONVERSATION_ID}"
 
     fun interview(conversationId: String): String = "interview/$conversationId"
 
     fun feedback(conversationId: String): String = "feedback/$conversationId"
+
+    fun completion(conversationId: String): String = "completion/$conversationId"
 }
