@@ -123,6 +123,9 @@ private class Slice2FakeApi(
 
     override suspend fun getFeedback(conversationId: String): FeedbackDto =
         throw UnsupportedOperationException()
+
+    override suspend fun transcribeAudio(audio: okhttp3.MultipartBody.Part): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        throw UnsupportedOperationException()
 }
 
 private fun httpError(code: Int): HttpException =

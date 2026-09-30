@@ -115,6 +115,11 @@ private class ScriptedTurnsApi(
         return voiceScript(turnId, bytes)
     }
 
+    override suspend fun transcribeAudio(
+        audio: okhttp3.MultipartBody.Part,
+    ): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        throw UnsupportedOperationException()
+
     var openingCalls = 0
 
     override suspend fun getOpening(conversationId: String): OpeningResponse {
@@ -331,8 +336,8 @@ class VoiceInterviewTest {
 
         vm.startVoiceInput()
         vm.releaseVoice()
-        // Recognizer stopped exactly once by release (barge-in only stops TTS).
-        assertEquals(1, rec.stopCalls)
+        // Recognizer released exactly once by release (barge-in only stops TTS).
+        assertEquals(1, rec.releaseCalls)
         assertTrue(synth.stopCalls >= 1)
         assertEquals(VoicePhase.IDLE, vm.voicePhase)
     }

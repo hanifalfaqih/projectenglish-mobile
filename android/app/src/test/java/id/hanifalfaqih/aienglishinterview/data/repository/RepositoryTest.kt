@@ -19,6 +19,7 @@ import id.hanifalfaqih.aienglishinterview.data.remote.VoiceTurnResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.VoiceAudioDto
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse
 import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
@@ -147,6 +148,20 @@ private class FakeApi(
         lastVoiceParts = listOf(audio)
         lastVoiceTurnIdPart = clientTurnId
         return voiceResult.getOrThrow()
+    }
+
+    var lastTranscriptionAudio: ByteArray? = null
+    var transcriptionResult: Result<TranscriptionResponse> =
+        Result.success(TranscriptionResponse("spoken answer"))
+
+    override suspend fun transcribeAudio(
+        audio: okhttp3.MultipartBody.Part,
+    ): TranscriptionResponse {
+        failure?.let { throw it }
+        val buffer = okio.Buffer()
+        audio.body.writeTo(buffer)
+        lastTranscriptionAudio = buffer.readByteArray()
+        return transcriptionResult.getOrThrow()
     }
 }
 

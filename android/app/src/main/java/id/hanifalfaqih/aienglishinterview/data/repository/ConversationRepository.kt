@@ -168,6 +168,38 @@ class ConversationRepository(
         }
     }
 
+    /**
+     * Transcription only: uploads captured PCM for server-side transcription
+     * without creating a conversation turn. Returns the transcript string.
+     * Used by targeted retry to transcribe spoken answers before submission
+     * to POST /conversations/{id}/retries. A 422 means no usable speech —
+     * surfaced as a voice error, not a generic failure.
+     */
+    suspend fun transcribeAudio(pcm16Mono: ByteArray): ApiResult<String> {
+        val audio = MultipartBody.Part.createFormData(
+            "audio",
+            "answer.pcm",
+            pcm16Mono.toRequestBody("application/octet-stream".toMediaType()),
+        )
+        return when (val result = apiCall { api.transcribeAudio(audio) }) {
+            is ApiResult.Success -> ApiResult.Success(result.value.transcript)
+            is ApiResult.Error ->
+                if (result.httpCode == 422) {
+                    ApiResult.Error(
+                        kind = result.kind,
+                        message = "No speech detected. Try again.",
+                        httpCode = 422,
+                    )
+                } else {
+                    ApiResult.Error(
+                        kind = result.kind,
+                        message = "Transcription failed: ${result.message}",
+                        httpCode = result.httpCode,
+                    )
+                }
+        }
+    }
+
     /** JVM-safe dev logging: Logcat on device, silent under unit tests. */
     private fun emitTiming(message: String) {
         val sink = timingLog

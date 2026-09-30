@@ -219,6 +219,85 @@ export function registerVoiceRoutes(
   );
 }
 
+/**
+ * POST /transcription — multipart `audio` (raw 16-bit mono 16 kHz PCM) →
+ * `{ transcript }`. Transcription ONLY: no conversation is looked up, no turn
+ * is created, nothing is persisted.
+ *
+ * Lets a spoken answer be transcribed for an operation other than a
+ * conversation turn. Targeted retry uses this, then submits the transcript to
+ * POST /conversations/:id/retries so the retry stays a separate RetryPractice
+ * artifact and the original conversation is never mutated.
+ *
+ * Error semantics mirror the ASR stage of POST /conversations/:id/voice-turn:
+ * 400 invalid/missing audio, 413 oversized, 422 no speech, 502 provider
+ * failure, 504 provider timeout, 500 unexpected. There is deliberately no
+ * 404/409 — no conversation is involved.
+ */
+export function registerTranscriptionRoutes(
+  app: FastifyInstance,
+  deps: { service: VoiceTurnService },
+): void {
+  app.post("/transcription", async (request, reply) => {
+    let audio: Buffer | null = null;
+    try {
+      for await (const part of request.parts()) {
+        if (part.type === "file" && part.fieldname === "audio") {
+          audio = await part.toBuffer();
+          break;
+        }
+      }
+    } catch (err) {
+      if (isTooLargeError(err)) {
+        return reply.status(413).send({ error: "Voice audio too large" });
+      }
+      return reply.status(400).send({ error: "Invalid request" });
+    }
+    if (!audio) {
+      return reply.status(400).send({ error: "Invalid request" });
+    }
+
+    try {
+      const result = await deps.service.transcribeOnly({ pcm: audio });
+      return reply.status(200).send({ transcript: result.transcript });
+    } catch (err) {
+      if (err instanceof VoiceAudioTooLargeError) {
+        return reply.status(413).send({ error: "Voice audio too large" });
+      }
+      if (err instanceof VoiceAudioInvalidError) {
+        return reply.status(400).send({ error: err.message });
+      }
+      if (err instanceof VoiceNoSpeechError) {
+        return reply
+          .status(422)
+          .send({ error: "No speech detected", code: "no_speech" });
+      }
+      if (err instanceof ProviderTimeoutError) {
+        request.log.warn(
+          {
+            voiceStageFailed: stageOf(err),
+            voiceElapsedMs: elapsedOf(err),
+          },
+          "transcription provider timeout",
+        );
+        return reply.status(504).send({ error: "Provider timeout" });
+      }
+      if (err instanceof ProviderError) {
+        request.log.warn(
+          {
+            voiceStageFailed: stageOf(err),
+            voiceElapsedMs: elapsedOf(err),
+          },
+          "transcription provider error",
+        );
+        return reply.status(502).send({ error: "Provider error" });
+      }
+      request.log.error(err);
+      return reply.status(500).send({ error: "Internal server error" });
+    }
+  });
+}
+
 function isTooLargeError(err: unknown): boolean {
   return (
     typeof err === "object" &&

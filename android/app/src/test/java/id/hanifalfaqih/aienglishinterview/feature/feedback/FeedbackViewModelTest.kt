@@ -1,25 +1,29 @@
 package id.hanifalfaqih.aienglishinterview.feature.feedback
 
+import id.hanifalfaqih.aienglishinterview.core.monetization.FakeMonetization
+import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
+import id.hanifalfaqih.aienglishinterview.core.voice.FakeVoiceRecognizer
+import id.hanifalfaqih.aienglishinterview.data.model.AnswerFeedback
+import id.hanifalfaqih.aienglishinterview.data.remote.AnswerFeedbackItemDto
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateConversationRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateConversationResponse
-import id.hanifalfaqih.aienglishinterview.data.remote.ConversationStateDto
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateExperienceProfileRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateExperienceProfileResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.FeedbackDto
 import id.hanifalfaqih.aienglishinterview.data.remote.GetConversationResponse
-import id.hanifalfaqih.aienglishinterview.data.remote.OpeningResponse
-import id.hanifalfaqih.aienglishinterview.data.remote.SubmitRetryRequestDto
-import id.hanifalfaqih.aienglishinterview.data.remote.RetryResponseDto
-import id.hanifalfaqih.aienglishinterview.data.remote.RetryFeedbackDto
-import id.hanifalfaqih.aienglishinterview.data.model.AnswerFeedback
 import id.hanifalfaqih.aienglishinterview.data.remote.InterviewApi
+import id.hanifalfaqih.aienglishinterview.data.remote.OpeningResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.ResumeParseResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.RetryFeedbackDto
+import id.hanifalfaqih.aienglishinterview.data.remote.RetryResponseDto
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnResponse
+import id.hanifalfaqih.aienglishinterview.data.remote.SubmitRetryRequestDto
+import id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.VoiceTurnResponse
-import id.hanifalfaqih.aienglishinterview.core.monetization.FakeMonetization
-import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
+import id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository
 import id.hanifalfaqih.aienglishinterview.data.repository.FeedbackRepository
+import id.hanifalfaqih.aienglishinterview.data.repository.RetryRepository
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -53,7 +57,7 @@ private class ScriptedFeedbackApi(
     var conversationDetail: GetConversationResponse = GetConversationResponse(
         id = "conv-1",
         status = "closed",
-        state = ConversationStateDto("wrap_up", emptyList(), null, 8),
+        state = id.hanifalfaqih.aienglishinterview.data.remote.ConversationStateDto("wrap_up", emptyList(), null, 8),
         experienceProfileId = "profile-9",
     ),
     var newConversationId: String = "conv-2",
@@ -67,7 +71,7 @@ private class ScriptedFeedbackApi(
         practiceCalls++
         lastProfileId = body.experienceProfileId
         return CreateConversationResponse(
-            newConversationId, "active", ConversationStateDto("intro", emptyList(), null, 0),
+            newConversationId, "active", id.hanifalfaqih.aienglishinterview.data.remote.ConversationStateDto("intro", emptyList(), null, 0),
         )
     }
     override suspend fun sendTurn(conversationId: String, body: SendTurnRequest): SendTurnResponse =
@@ -81,6 +85,7 @@ private class ScriptedFeedbackApi(
     ): retrofit2.Response<RetryResponseDto> {
         submitCalls++
         lastRetryKey = body.retryClientKey
+        lastRetryAnswer = body.retryAnswer
         return submitRetryScript(conversationId, body)
     }
 
@@ -88,6 +93,7 @@ private class ScriptedFeedbackApi(
         { _, _ -> throw UnsupportedOperationException() }
     var submitCalls = 0
     var lastRetryKey: String? = null
+    var lastRetryAnswer: String? = null
 
     override suspend fun getCurrentRetry(
         conversationId: String,
@@ -105,7 +111,6 @@ private class ScriptedFeedbackApi(
     var regenerateScript: suspend (String, String) -> RetryResponseDto =
         { _, _ -> throw UnsupportedOperationException() }
 
-
     override suspend fun getConversation(conversationId: String): GetConversationResponse =
         conversationDetail
     override suspend fun generateFeedback(conversationId: String): Response<FeedbackDto> {
@@ -122,6 +127,21 @@ private class ScriptedFeedbackApi(
         clientTurnId: okhttp3.RequestBody,
     ): VoiceTurnResponse =
         throw UnsupportedOperationException()
+
+    var transcribeAudioResult: Result<TranscriptionResponse> =
+        Result.success(TranscriptionResponse("spoken answer"))
+    var transcribeAudioCalls = 0
+    var lastTranscriptionAudio: ByteArray? = null
+
+    override suspend fun transcribeAudio(
+        audio: okhttp3.MultipartBody.Part,
+    ): TranscriptionResponse {
+        transcribeAudioCalls++
+        val buffer = okio.Buffer()
+        audio.body.writeTo(buffer)
+        lastTranscriptionAudio = buffer.readByteArray()
+        return transcribeAudioResult.getOrThrow()
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -201,7 +221,7 @@ class PracticeAgainTest {
     ) = FeedbackViewModel(
         "conv-1",
         FeedbackRepository(api),
-        id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository(api),
+        ConversationRepository(api),
         monetization,
     )
 
@@ -226,7 +246,7 @@ class PracticeAgainTest {
             conversationDetail = GetConversationResponse(
                 id = "conv-1",
                 status = "closed",
-                state = ConversationStateDto("wrap_up", emptyList(), null, 8),
+                state = id.hanifalfaqih.aienglishinterview.data.remote.ConversationStateDto("wrap_up", emptyList(), null, 8),
                 experienceProfileId = null,
             ),
         )
@@ -251,7 +271,7 @@ class PracticeAgainTest {
         val vm = FeedbackViewModel(
             "conv-1",
             FeedbackRepository(failing),
-            id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository(failing),
+            ConversationRepository(failing),
             FakeMonetization(isPremium = true),
         )
         advanceUntilIdle()
@@ -298,7 +318,7 @@ class PracticeAgainGatingTest {
     ) = FeedbackViewModel(
         "conv-1",
         FeedbackRepository(api),
-        id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository(api),
+        ConversationRepository(api),
         monetization,
     )
 
@@ -499,13 +519,37 @@ class AnswerRetryTest {
         practiceOpportunity = practice,
     )
 
-    private fun viewModel(api: ScriptedFeedbackApi) = FeedbackViewModel(
-        "conv-1",
-        FeedbackRepository(api),
-        id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository(api),
-        FakeMonetization(isPremium = true),
-        id.hanifalfaqih.aienglishinterview.data.repository.RetryRepository(api),
+    private fun feedbackDtoWithItem(item: AnswerFeedback) = FeedbackDto(
+        conversationId = "conv-1",
+        promptVersion = "v1",
+        overall = "Great clarity.",
+        answerItems = listOf(
+            AnswerFeedbackItemDto(
+                answerMessageId = item.answerMessageId,
+                questionMessageId = item.questionMessageId,
+                questionText = item.questionText,
+                whatWorked = item.whatWorked,
+                couldImprove = item.couldImprove,
+                tryNextTime = item.tryNextTime,
+                practiceOpportunity = item.practiceOpportunity,
+            )
+        ),
+        professionalCommunication = listOf("Confident tone."),
+        createdAt = "2026-09-28T00:00:00.000Z",
     )
+
+    private fun viewModel(api: ScriptedFeedbackApi): Pair<FeedbackViewModel, FakeVoiceRecognizer> {
+        val recognizer = FakeVoiceRecognizer()
+        val vm = FeedbackViewModel(
+            "conv-1",
+            FeedbackRepository(api),
+            ConversationRepository(api),
+            FakeMonetization(isPremium = true),
+            RetryRepository(api),
+            recognizer,
+        )
+        return vm to recognizer
+    }
 
     private fun httpError(code: Int): retrofit2.HttpException =
         retrofit2.HttpException(Response.error<Any>(code, "".toResponseBody()))
@@ -513,57 +557,106 @@ class AnswerRetryTest {
     @Test
     fun practiceTrue_allowsSubmission() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item(practice = true)
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(practice = true), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.FeedbackAvailable
         assertEquals("r1", state.retry.id)
         assertEquals("Clearer now.", state.retry.feedback?.overall)
         assertEquals(1, api.submitCalls)
+        assertEquals(1, api.transcribeAudioCalls)
     }
 
     @Test
     fun practiceFalse_doesNotSubmit() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
-        val vm = viewModel(api)
+        val testItem = item(practice = false)
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(practice = false), "Better answer.")
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
 
-        assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error)
+        // practiceOpportunity=false should prevent voice input from starting
+        assertTrue(vm.retryStates["u1"] == null || vm.retryStates["u1"] is AnswerRetryState.Idle)
         assertEquals(0, api.submitCalls)
+        assertEquals(0, api.transcribeAudioCalls)
     }
 
     @Test
-    fun submitting_enteredBeforeRepositoryCall() = runTest(dispatcher) {
-        val gate = kotlinx.coroutines.CompletableDeferred<Response<RetryResponseDto>>()
+    fun transcriptionFailure_doesNotSubmit() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
-        api.submitRetryScript = { _, _ -> gate.await() }
-        val vm = viewModel(api)
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
+        api.transcribeAudioResult = Result.failure(IOException("transcription failed"))
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
-        dispatcher.scheduler.advanceUntilIdle()
-        assertTrue(vm.retryStates["u1"] is AnswerRetryState.Submitting)
-
-        gate.complete(Response.success(201, retryDto()))
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
-        assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
+
+        assertEquals(1, api.transcribeAudioCalls)
+        assertEquals(0, api.submitCalls)
+        val state = vm.retryStates["u1"] as AnswerRetryState.Error
+        assertTrue(state.message.contains("transcription", ignoreCase = true))
+    }
+
+    @Test
+    fun noSpeech422_doesNotSubmit() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
+        api.transcribeAudioResult = Result.failure(httpError(422))
+        val (vm, recognizer) = viewModel(api)
+        advanceUntilIdle()
+
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
+        advanceUntilIdle()
+
+        assertEquals(1, api.transcribeAudioCalls)
+        assertEquals(0, api.submitCalls)
+        val state = vm.retryStates["u1"] as AnswerRetryState.Error
+        assertEquals(422, state.httpCode)
+    }
+
+    @Test
+    fun emptyAudio_doesNotCallTranscription() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
+        val (vm, recognizer) = viewModel(api)
+        advanceUntilIdle()
+
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf())
+        advanceUntilIdle()
+
+        assertEquals(0, api.transcribeAudioCalls)
+        assertEquals(0, api.submitCalls)
+        assertTrue(vm.voiceError?.contains("No audio", ignoreCase = true) == true)
     }
 
     @Test
     fun http200_mapsToSameAvailableSemantics() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(200, retryDto()) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.FeedbackAvailable
@@ -573,11 +666,14 @@ class AnswerRetryTest {
     @Test
     fun failedStatus_mapsToFeedbackFailed() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto(feedback = null, status = "failed")) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.FeedbackFailed
@@ -588,11 +684,14 @@ class AnswerRetryTest {
     @Test
     fun generatedStatusWithNullFeedback_isNotManufacturedSuccess() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto(feedback = null, status = "generated")) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackFailed)
@@ -601,12 +700,15 @@ class AnswerRetryTest {
     @Test
     fun originalFeedback_unchangedAfterRetry() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
         val before = (vm.uiState as FeedbackUiState.Content).feedback
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val after = (vm.uiState as FeedbackUiState.Content).feedback
@@ -616,11 +718,14 @@ class AnswerRetryTest {
     @Test
     fun retryKey_generatedOncePerOperation() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val key = api.lastRetryKey
@@ -629,31 +734,16 @@ class AnswerRetryTest {
     }
 
     @Test
-    fun repeatedActionWhileSubmitting_noDuplicateRequest() = runTest(dispatcher) {
-        val gate = kotlinx.coroutines.CompletableDeferred<Response<RetryResponseDto>>()
-        val api = ScriptedFeedbackApi()
-        api.submitRetryScript = { _, _ -> gate.await() }
-        val vm = viewModel(api)
-        advanceUntilIdle()
-
-        vm.startRetry(item(), "Better answer.")
-        vm.startRetry(item(), "Better answer.")
-        dispatcher.scheduler.advanceUntilIdle()
-        assertEquals(1, api.submitCalls)
-
-        gate.complete(Response.success(201, retryDto()))
-        advanceUntilIdle()
-        assertEquals(1, api.submitCalls)
-    }
-
-    @Test
     fun error404_handled() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> throw httpError(404) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.Error
@@ -663,11 +753,14 @@ class AnswerRetryTest {
     @Test
     fun error409_distinguishable() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> throw httpError(409) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.Error
@@ -679,7 +772,7 @@ class AnswerRetryTest {
     fun loadCurrentRetry_404meansNoRetry() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
         api.getCurrentRetryScript = { _, _ -> throw httpError(404) }
-        val vm = viewModel(api)
+        val (vm, _) = viewModel(api)
         advanceUntilIdle()
 
         vm.loadCurrentRetry("u1")
@@ -692,7 +785,7 @@ class AnswerRetryTest {
     fun loadCurrentRetry_populatesOn200() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
         api.getCurrentRetryScript = { _, _ -> retryDto() }
-        val vm = viewModel(api)
+        val (vm, _) = viewModel(api)
         advanceUntilIdle()
 
         vm.loadCurrentRetry("u1")
@@ -707,7 +800,7 @@ class AnswerRetryTest {
     fun regenerate_updatesState() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
         api.regenerateScript = { _, _ -> retryDto() }
-        val vm = viewModel(api)
+        val (vm, _) = viewModel(api)
         advanceUntilIdle()
 
         vm.regenerateRetry("u1")
@@ -721,7 +814,7 @@ class AnswerRetryTest {
     fun regenerate_failureKeepsM11Intact() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
         api.regenerateScript = { _, _ -> throw httpError(502) }
-        val vm = viewModel(api)
+        val (vm, _) = viewModel(api)
         advanceUntilIdle()
         val before = (vm.uiState as FeedbackUiState.Content).feedback
 
@@ -736,11 +829,14 @@ class AnswerRetryTest {
     @Test
     fun states_keyedPerAnswer() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
-        val vm = viewModel(api)
+        val (vm, recognizer) = viewModel(api)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
@@ -812,45 +908,73 @@ class M12MonetizationGateTest {
         practiceOpportunity = practice,
     )
 
-    private fun viewModel(api: ScriptedFeedbackApi, monetization: FakeMonetization) =
-        FeedbackViewModel(
+    private fun feedbackDtoWithItem(item: AnswerFeedback) = FeedbackDto(
+        conversationId = "conv-1",
+        promptVersion = "v1",
+        overall = "Great clarity.",
+        answerItems = listOf(
+            AnswerFeedbackItemDto(
+                answerMessageId = item.answerMessageId,
+                questionMessageId = item.questionMessageId,
+                questionText = item.questionText,
+                whatWorked = item.whatWorked,
+                couldImprove = item.couldImprove,
+                tryNextTime = item.tryNextTime,
+                practiceOpportunity = item.practiceOpportunity,
+            )
+        ),
+        professionalCommunication = listOf("Confident tone."),
+        createdAt = "2026-09-28T00:00:00.000Z",
+    )
+
+    private fun viewModel(api: ScriptedFeedbackApi, monetization: FakeMonetization): Pair<FeedbackViewModel, FakeVoiceRecognizer> {
+        val recognizer = FakeVoiceRecognizer()
+        val vm = FeedbackViewModel(
             "conv-1",
             FeedbackRepository(api),
-            id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository(api),
+            ConversationRepository(api),
             monetization,
-            id.hanifalfaqih.aienglishinterview.data.repository.RetryRepository(api),
+            RetryRepository(api),
+            recognizer,
         )
+        return vm to recognizer
+    }
 
     @Test
     fun ineligibleItem_neverTouchesMonetizationOrRetry() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item(practice = false)
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         val monetization = FakeMonetization(isPremium = false)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
         val refreshesBefore = monetization.refreshCalls
 
-        vm.requestPractice(item(practice = false))
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
 
         assertEquals(refreshesBefore, monetization.refreshCalls)
         assertEquals(false, vm.retryGateRequiresPurchase)
-        assertEquals(null, vm.practiceFormTarget)
+        assertEquals(0, api.transcribeAudioCalls)
         assertEquals(0, api.submitCalls)
     }
 
     @Test
     fun eligibleNonPremium_routesToPaywallWithoutRetryPost() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(isPremium = false)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         assertTrue(vm.retryGateRequiresPurchase)
-        assertEquals(null, vm.practiceFormTarget)
+        assertEquals(0, api.transcribeAudioCalls)
         assertEquals(0, api.submitCalls)
 
         vm.onRetryGateNavigated()
@@ -860,12 +984,14 @@ class M12MonetizationGateTest {
     @Test
     fun eligiblePremium_opensFormWithoutPaywall() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(isPremium = true)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
 
         assertEquals("u1", vm.practiceFormTarget)
@@ -876,15 +1002,19 @@ class M12MonetizationGateTest {
     @Test
     fun startRetry_nonPremium_neverCallsRetryBackend() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(isPremium = false)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         assertEquals(0, api.submitCalls)
+        assertEquals(0, api.transcribeAudioCalls)
         assertTrue(vm.retryGateRequiresPurchase)
         assertTrue(vm.retryStates["u1"] == null || vm.retryStates["u1"] is AnswerRetryState.Idle)
     }
@@ -892,14 +1022,18 @@ class M12MonetizationGateTest {
     @Test
     fun startRetry_premium_callsRetryBackend() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(isPremium = true)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
+        assertEquals(1, api.transcribeAudioCalls)
         assertEquals(1, api.submitCalls)
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
         assertEquals(null, vm.practiceFormTarget)
@@ -908,11 +1042,13 @@ class M12MonetizationGateTest {
     @Test
     fun closePracticeForm_clearsTarget() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         val monetization = FakeMonetization(isPremium = true)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
         assertEquals("u1", vm.practiceFormTarget)
 
@@ -930,15 +1066,18 @@ class M12MonetizationGateTest {
     @Test
     fun requestPractice_loading_showsRecoverableErrorNotPaywall() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(initialState = PremiumState.Loading)
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
 
         assertEquals("loading must not open the paywall", false, vm.retryGateRequiresPurchase)
+        assertEquals(0, api.transcribeAudioCalls)
         assertEquals(0, api.submitCalls)
         val state = vm.retryStates["u1"] as AnswerRetryState.Error
         assertTrue(state.message.isNotBlank())
@@ -947,9 +1086,11 @@ class M12MonetizationGateTest {
 
         // Recovery: entitlement resolves, resubmission goes through.
         monetization.setPremium(true)
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
+        assertEquals(1, api.transcribeAudioCalls)
         assertEquals(1, api.submitCalls)
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
         assertEquals(false, vm.retryGateRequiresPurchase)
@@ -963,32 +1104,37 @@ class M12MonetizationGateTest {
     @Test
     fun requestPractice_unavailable_showsRecoverableErrorNotPaywall() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(
             initialState = PremiumState.Unavailable("RevenueCat is not configured."),
         )
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
         advanceUntilIdle()
 
         assertEquals("unavailable must not open the paywall", false, vm.retryGateRequiresPurchase)
+        assertEquals(0, api.transcribeAudioCalls)
         assertEquals(0, api.submitCalls)
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error)
         assertEquals("u1", vm.practiceFormTarget)
 
         monetization.setPremium(true)
-        vm.startRetry(item(), "Better answer.")
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
+        assertEquals(1, api.transcribeAudioCalls)
         assertEquals(1, api.submitCalls)
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
     }
 
     /**
      * The submission gate re-checks entitlement independently of
-     * [requestPractice]: a submission attempted while entitlement is
+     * [startVoiceInput]: a submission attempted while entitlement is
      * unresolved must not reach the retry backend and must not open the
      * paywall, leaving a recoverable error with the draft's form intact.
      */
@@ -999,14 +1145,18 @@ class M12MonetizationGateTest {
             PremiumState.Unavailable("RevenueCat is not configured."),
         )) {
             val api = ScriptedFeedbackApi()
+            val testItem = item()
+            api.next = { Response.success(feedbackDtoWithItem(testItem)) }
             api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
             val monetization = FakeMonetization(initialState = initial)
-            val vm = viewModel(api, monetization)
+            val (vm, recognizer) = viewModel(api, monetization)
             advanceUntilIdle()
 
-            vm.startRetry(item(), "Better answer.")
+            vm.startVoiceInput(testItem)
+            recognizer.emitAudio(byteArrayOf(1, 2, 3))
             advanceUntilIdle()
 
+            assertEquals(0, api.transcribeAudioCalls)
             assertEquals(0, api.submitCalls)
             assertEquals(false, vm.retryGateRequiresPurchase)
             assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error)
@@ -1024,16 +1174,20 @@ class M12MonetizationGateTest {
     @Test
     fun determinedFree_isTheOnlyStateThatOpensM12Paywall() = runTest(dispatcher) {
         val api = ScriptedFeedbackApi()
+        val testItem = item()
+        api.next = { Response.success(feedbackDtoWithItem(testItem)) }
         api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
         val monetization = FakeMonetization(initialState = PremiumState.Determined(false))
-        val vm = viewModel(api, monetization)
+        val (vm, recognizer) = viewModel(api, monetization)
         advanceUntilIdle()
 
-        vm.requestPractice(item())
+        vm.startVoiceInput(testItem)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
         advanceUntilIdle()
 
         assertTrue(vm.retryGateRequiresPurchase)
         assertEquals(null, vm.practiceFormTarget)
+        assertEquals(0, api.transcribeAudioCalls)
         assertEquals(0, api.submitCalls)
         // No inline error is manufactured for a determined-free user.
         assertTrue(vm.retryStates["u1"] == null || vm.retryStates["u1"] is AnswerRetryState.Idle)

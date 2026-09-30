@@ -104,6 +104,11 @@ data class VoiceTurnResponse(
     val audioError: String? = null,
 )
 
+@Serializable
+data class TranscriptionResponse(
+    val transcript: String,
+)
+
 /**
  * AI-first opening response. Same audio envelope as voice turns: PCM audio
  * when backend synthesis succeeded, null + audioError otherwise.
@@ -163,6 +168,17 @@ interface InterviewApi {
         @Part audio: MultipartBody.Part,
         @Part("clientTurnId") clientTurnId: RequestBody,
     ): VoiceTurnResponse
+
+    /**
+     * Transcription only: raw 16-bit mono 16 kHz PCM as multipart `audio`.
+     * Returns the transcript without creating a conversation turn.
+     * Used by targeted retry to transcribe spoken answers before submission.
+     */
+    @Multipart
+    @POST("transcription")
+    suspend fun transcribeAudio(
+        @Part audio: MultipartBody.Part,
+    ): TranscriptionResponse
 
     @GET("conversations/{id}")
     suspend fun getConversation(

@@ -106,6 +106,11 @@ private class FakeFeedbackApi(
         clientTurnId: okhttp3.RequestBody,
     ): VoiceTurnResponse =
         throw UnsupportedOperationException()
+
+    override suspend fun transcribeAudio(
+        audio: okhttp3.MultipartBody.Part,
+    ): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        throw UnsupportedOperationException()
 }
 
 class FeedbackRepositoryTest {

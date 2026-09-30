@@ -107,6 +107,16 @@ export interface VoiceTurnTimings {
   audioBytes: number;
 }
 
+export interface TranscribeInput {
+  /** Raw 16-bit mono 16 kHz PCM bytes, same fixed contract as voice turns. */
+  pcm: Uint8Array;
+}
+
+/** Transcription-only result: the transcript and nothing else. */
+export interface TranscribeResult {
+  transcript: string;
+}
+
 export interface OpeningTurnResult {
   assistantMessage: string;
   /** Synthesized PCM (16-bit mono 24 kHz) of the opening message, if TTS succeeded. */
@@ -134,6 +144,44 @@ export class VoiceTurnService {
 
   constructor(private readonly deps: VoiceTurnServiceDependencies) {
     this.limits = deps.limits ?? DEFAULT_VOICE_LIMITS;
+  }
+
+  /**
+   * Transcription ONLY: audio → transcript, with no conversation lookup, no
+   * turn processing, no TTS, and no persistence of any kind.
+   *
+   * Exists so a spoken answer can be transcribed for a DIFFERENT business
+   * operation than a conversation turn — targeted retry submits the resulting
+   * transcript to POST /conversations/:id/retries, which keeps its own
+   * RetryPractice artifact semantics. Deliberately NOT routed through
+   * {@link voiceTurn}: a retry must not create a conversation turn or mutate
+   * the original conversation.
+   *
+   * Shares the same ASR provider, WAV wrapping, size limits, and error
+   * taxonomy as voice turns, so there is exactly one transcription
+   * implementation.
+   */
+  async transcribeOnly(input: TranscribeInput): Promise<TranscribeResult> {
+    const receivedMs = Date.now();
+    if (input.pcm.length === 0) {
+      throw new VoiceAudioInvalidError("Empty voice audio");
+    }
+    if (input.pcm.length > this.limits.maxAudioBytes) {
+      throw new VoiceAudioTooLargeError(input.pcm.length);
+    }
+
+    const wav = isWav(input.pcm)
+      ? Buffer.from(input.pcm)
+      : pcm16MonoToWav(input.pcm);
+    const transcript = await this.deps.asrProvider
+      .transcribe(wav)
+      .catch((err: unknown) => {
+        throw tagStage(err, "asr", receivedMs);
+      });
+    if (!transcript || transcript.trim().length === 0) {
+      throw new VoiceNoSpeechError();
+    }
+    return { transcript: transcript.trim() };
   }
 
   /**

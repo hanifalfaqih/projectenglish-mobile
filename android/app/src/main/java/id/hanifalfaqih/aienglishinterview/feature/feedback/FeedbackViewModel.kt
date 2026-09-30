@@ -12,6 +12,9 @@ import id.hanifalfaqih.aienglishinterview.data.model.Retry
 import id.hanifalfaqih.aienglishinterview.core.monetization.MonetizationProvider
 import id.hanifalfaqih.aienglishinterview.core.monetization.MonetizationRepository
 import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
+import id.hanifalfaqih.aienglishinterview.core.voice.VoiceRecognizer
+import id.hanifalfaqih.aienglishinterview.core.voice.RecognitionEvent
+import id.hanifalfaqih.aienglishinterview.core.voice.VoicePhase
 import id.hanifalfaqih.aienglishinterview.data.repository.ConversationRepository
 import id.hanifalfaqih.aienglishinterview.data.repository.FeedbackRepository
 import id.hanifalfaqih.aienglishinterview.data.repository.RetryRepository
@@ -64,6 +67,7 @@ class FeedbackViewModel(
     private val conversations: ConversationRepository = ConversationRepository(),
     private val monetization: MonetizationRepository = MonetizationProvider.repository,
     private val retries: RetryRepository = RetryRepository(),
+    private val recognizer: VoiceRecognizer? = null,
 ) : ViewModel() {
 
     var uiState by mutableStateOf<FeedbackUiState>(FeedbackUiState.Loading)
@@ -75,8 +79,103 @@ class FeedbackViewModel(
     private var loading = false
     private var practicing = false
 
+    // --- Voice retry state ---
+
+    var voicePhase by mutableStateOf(VoicePhase.IDLE)
+        private set
+
+    var voiceError by mutableStateOf<String?>(null)
+        private set
+
+    private var retryTarget: String? = null
+
     init {
         load()
+        if (recognizer != null) {
+            viewModelScope.launch {
+                recognizer.events.collect { onRecognitionEvent(it) }
+            }
+        }
+    }
+
+    private fun onRecognitionEvent(event: RecognitionEvent) {
+        when (event) {
+            is RecognitionEvent.FinalAudio -> {
+                voicePhase = VoicePhase.IDLE
+                if (event.audio.isEmpty()) {
+                    voiceError = "No audio recorded. Try again."
+                    return
+                }
+                val target = retryTarget ?: return
+                retryTarget = null
+                submitVoiceRetry(target, event.audio)
+            }
+            is RecognitionEvent.Error -> {
+                voiceError = event.message
+                voicePhase = VoicePhase.IDLE
+            }
+            is RecognitionEvent.Partial, is RecognitionEvent.Final -> Unit
+        }
+    }
+
+    fun startVoiceInput(feedbackItem: AnswerFeedback) {
+        if (!feedbackItem.practiceOpportunity) {
+            // Don't start voice input for ineligible items
+            return
+        }
+        if (voicePhase == VoicePhase.LISTENING) return
+        
+        // Check current entitlement state synchronously first
+        when (val entitlement = monetization.premiumState.value) {
+            is PremiumState.Determined -> {
+                if (!entitlement.isPremium) {
+                    retryGateRequiresPurchase = true
+                    return
+                }
+                // Premium: open form and start listening immediately
+                practiceFormTarget = feedbackItem.answerMessageId
+                voiceError = null
+                retryTarget = feedbackItem.answerMessageId
+                voicePhase = VoicePhase.LISTENING
+                recognizer?.startListening()
+                return
+            }
+            is PremiumState.Loading, is PremiumState.Unavailable -> {
+                // Need to refresh asynchronously
+                viewModelScope.launch {
+                    monetization.refresh()
+                    when (val refreshed = monetization.premiumState.value) {
+                        is PremiumState.Determined -> {
+                            if (!refreshed.isPremium) {
+                                retryGateRequiresPurchase = true
+                            } else {
+                                practiceFormTarget = feedbackItem.answerMessageId
+                                voiceError = null
+                                retryTarget = feedbackItem.answerMessageId
+                                voicePhase = VoicePhase.LISTENING
+                                recognizer?.startListening()
+                            }
+                        }
+                        is PremiumState.Loading, is PremiumState.Unavailable -> {
+                            retryStates = retryStates + (
+                                feedbackItem.answerMessageId to AnswerRetryState.Error(
+                                    message = unresolvedEntitlementMessage(refreshed),
+                                )
+                                )
+                            practiceFormTarget = feedbackItem.answerMessageId
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelVoiceInput() {
+        recognizer?.stopListening()
+        retryTarget = null
+        if (voicePhase == VoicePhase.LISTENING) {
+            voicePhase = VoicePhase.IDLE
+        }
     }
 
     fun load() {
@@ -268,36 +367,17 @@ class FeedbackViewModel(
     }
 
     /**
-     * Submits a retry answer for one feedback item. Eligibility comes only
-     * from the server-provided [AnswerFeedback.practiceOpportunity]; nothing
-     * is inferred from wording, dimensions, or IDs. Access is re-verified
-     * against the same generic premium state before any repository call, so
-     * the retry backend is never invoked without entitlement. One
-     * retryClientKey (fresh UUID) is generated per operation and retained
-     * for its lifecycle.
+     * Submits a voice retry answer for one feedback item. Captures audio,
+     * transcribes it via /transcription, then submits the transcript to
+     * /retries. Eligibility comes only from the server-provided
+     * [AnswerFeedback.practiceOpportunity]; nothing is inferred from wording,
+     * dimensions, or IDs. Access is re-verified against the same generic
+     * premium state before any repository call, so the retry backend is never
+     * invoked without entitlement. One retryClientKey (fresh UUID) is generated
+     * per operation and retained for its lifecycle.
      */
-    fun startRetry(feedbackItem: AnswerFeedback, retryAnswer: String) {
-        val target = feedbackItem.answerMessageId
+    private fun submitVoiceRetry(target: String, audio: ByteArray) {
         if (retryStates[target] is AnswerRetryState.Submitting) return
-        if (!feedbackItem.practiceOpportunity) {
-            retryStates = retryStates + (target to AnswerRetryState.Error(
-                message = "This answer is not available for retry.",
-            ))
-            return
-        }
-        val questionId = feedbackItem.questionMessageId
-        if (questionId == null) {
-            retryStates = retryStates + (target to AnswerRetryState.Error(
-                message = "This answer is not available for retry.",
-            ))
-            return
-        }
-        if (retryAnswer.isBlank()) {
-            retryStates = retryStates + (target to AnswerRetryState.Error(
-                message = "Write a retry answer first.",
-            ))
-            return
-        }
         val retryClientKey = UUID.randomUUID().toString()
         viewModelScope.launch {
             // Re-check after suspension points: a queued duplicate call must
@@ -314,35 +394,59 @@ class FeedbackViewModel(
 
                 // Unresolved entitlement must not read as free, and must not
                 // send the user to a paywall that cannot load offers. Surface
-                // a recoverable inline error instead: the form stays open
-                // with the draft preserved, and "Try Again"/Submit re-runs
-                // this gate. The retry backend is still never called.
+                // a recoverable inline error instead. The retry backend is
+                // still never called.
                 is PremiumState.Loading, is PremiumState.Unavailable -> {
                     retryStates = retryStates + (
                         target to AnswerRetryState.Error(
                             message = unresolvedEntitlementMessage(entitlement),
                         )
                         )
-                    practiceFormTarget = target
                     return@launch
                 }
             }
             retryStates = retryStates + (target to AnswerRetryState.Submitting)
+            // Transcribe audio first
+            val transcript = when (val result = conversations.transcribeAudio(audio)) {
+                is ApiResult.Success -> result.value
+                is ApiResult.Error -> {
+                    retryStates = retryStates + (target to AnswerRetryState.Error(
+                        message = result.message,
+                        httpCode = result.httpCode,
+                    ))
+                    return@launch
+                }
+            }
+            if (transcript.isBlank()) {
+                retryStates = retryStates + (target to AnswerRetryState.Error(
+                    message = "No speech detected. Try again.",
+                ))
+                return@launch
+            }
+            // Find the feedback item to get questionMessageId
+            val feedback = (uiState as? FeedbackUiState.Content)?.feedback
+            val feedbackItem = feedback?.answerItems?.find { it.answerMessageId == target }
+            val questionId = feedbackItem?.questionMessageId
+            if (questionId == null) {
+                retryStates = retryStates + (target to AnswerRetryState.Error(
+                    message = "This answer is not available for retry.",
+                ))
+                return@launch
+            }
+            // Submit transcript to /retries
             when (
                 val result = retries.submitRetry(
                     conversationId = conversationId,
                     answerMessageId = target,
                     questionMessageId = questionId,
-                    retryAnswer = retryAnswer,
+                    retryAnswer = transcript,
                     retryClientKey = retryClientKey,
                 )
             ) {
                 is ApiResult.Success -> {
                     val mapped = mapRetryResult(result.value.retry)
                     retryStates = retryStates + (target to mapped)
-                    if (mapped !is AnswerRetryState.Error) {
-                        practiceFormTarget = null
-                    }
+                    practiceFormTarget = null
                 }
                 is ApiResult.Error -> {
                     retryStates = retryStates + (target to AnswerRetryState.Error(

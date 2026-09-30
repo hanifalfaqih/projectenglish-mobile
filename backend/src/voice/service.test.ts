@@ -299,3 +299,113 @@ describe("VoiceTurnService stage tags", () => {
     expect(typeof elapsedOf(err)).toBe("number");
   });
 });
+
+/**
+ * Transcription-only path: audio → transcript with NO conversation lookup,
+ * NO turn processing, NO TTS, and no persistence. This is what targeted
+ * retry uses so a spoken retry answer never becomes a conversation turn.
+ */
+describe("VoiceTurnService.transcribeOnly", () => {
+  it("returns the transcript without touching conversation state", async () => {
+    const { service, repository, conversationService, asrProvider, tts } = setup();
+
+    const result = await service.transcribeOnly({
+      pcm: new Uint8Array([1, 2, 3, 4]),
+    });
+
+    expect(result).toEqual({ transcript: "spoken answer" });
+    expect(asrProvider.transcribe).toHaveBeenCalledOnce();
+    // The original conversation is never read, mutated, or turned.
+    expect(repository.findById).not.toHaveBeenCalled();
+    expect(conversationService.processTurn).not.toHaveBeenCalled();
+    // Transcription alone never synthesizes audio.
+    expect(tts.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("wraps raw PCM in a WAV container for the ASR provider", async () => {
+    const { service, asrProvider } = setup();
+    const pcm = new Uint8Array([1, 2, 3, 4]);
+
+    await service.transcribeOnly({ pcm });
+
+    const wav = vi.mocked(asrProvider.transcribe).mock.calls[0][0];
+    // RIFF....WAVE header, 44 bytes, followed by the original PCM.
+    expect(Buffer.from(wav).subarray(0, 4).toString("latin1")).toBe("RIFF");
+    expect(Buffer.from(wav).subarray(8, 12).toString("latin1")).toBe("WAVE");
+    expect(Buffer.from(wav).subarray(44)).toEqual(Buffer.from(pcm));
+  });
+
+  it("trims surrounding whitespace from the transcript", async () => {
+    const { service } = setup({ transcript: "  spaced answer  " });
+
+    const result = await service.transcribeOnly({ pcm: new Uint8Array([1, 2]) });
+
+    expect(result.transcript).toBe("spaced answer");
+  });
+
+  it("throws VoiceNoSpeechError for a blank transcript", async () => {
+    const { service } = setup({ transcript: "   " });
+
+    await expect(
+      service.transcribeOnly({ pcm: new Uint8Array([1, 2]) }),
+    ).rejects.toThrow(VoiceNoSpeechError);
+  });
+
+  it("throws VoiceNoSpeechError when the provider returns null", async () => {
+    const { service } = setup({ transcript: null });
+
+    await expect(
+      service.transcribeOnly({ pcm: new Uint8Array([1, 2]) }),
+    ).rejects.toThrow(VoiceNoSpeechError);
+  });
+
+  it("rejects empty audio without calling the provider", async () => {
+    const { service, asrProvider } = setup();
+
+    await expect(
+      service.transcribeOnly({ pcm: new Uint8Array([]) }),
+    ).rejects.toThrow(VoiceAudioInvalidError);
+    expect(asrProvider.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized audio without calling the provider", async () => {
+    const { service, asrProvider } = setup();
+
+    await expect(
+      service.transcribeOnly({ pcm: new Uint8Array(2048) }),
+    ).rejects.toThrow(VoiceAudioTooLargeError);
+    expect(asrProvider.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("propagates provider failure and timeout", async () => {
+    const failing = setup();
+    vi.mocked(failing.asrProvider.transcribe).mockRejectedValue(
+      new ProviderError("down"),
+    );
+    await expect(
+      failing.service.transcribeOnly({ pcm: new Uint8Array([1, 2]) }),
+    ).rejects.toThrow(ProviderError);
+
+    const slow = setup();
+    vi.mocked(slow.asrProvider.transcribe).mockRejectedValue(
+      new ProviderTimeoutError("slow"),
+    );
+    await expect(
+      slow.service.transcribeOnly({ pcm: new Uint8Array([1, 2]) }),
+    ).rejects.toThrow(ProviderTimeoutError);
+  });
+
+  it("tags the failure stage as asr for diagnostics", async () => {
+    const { service, asrProvider } = setup();
+    vi.mocked(asrProvider.transcribe).mockRejectedValue(new ProviderError("down"));
+
+    let err: unknown;
+    try {
+      await service.transcribeOnly({ pcm: new Uint8Array([1, 2]) });
+    } catch (e) {
+      err = e;
+    }
+    const { stageOf } = await import("./service.js");
+    expect(stageOf(err)).toBe("asr");
+  });
+});

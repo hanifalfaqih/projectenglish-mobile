@@ -23,7 +23,10 @@ import { registerRetryRoutes } from "./retry/routes.js";
 import { QwenAsrProvider, createQwenAsrProviderConfig } from "./voice/provider.js";
 import { QwenTtsSynthesizer, createQwenTtsConfig } from "./voice/tts.js";
 import { VoiceTurnService } from "./voice/service.js";
-import { registerVoiceRoutes } from "./voice/routes.js";
+import {
+  registerTranscriptionRoutes,
+  registerVoiceRoutes,
+} from "./voice/routes.js";
 import {
   DEFAULT_RESUME_LIMITS,
   ResumeParserService,
@@ -104,6 +107,12 @@ const voiceTurnService = new VoiceTurnService({
 });
 
 registerVoiceRoutes(app, { service: voiceTurnService });
+
+// Transcription only (no conversation turn, no persistence). Targeted retry
+// transcribes the spoken answer here, then submits the transcript to
+// POST /conversations/:id/retries so the retry stays a RetryPractice
+// artifact and the original conversation is never mutated.
+registerTranscriptionRoutes(app, { service: voiceTurnService });
 
 const start = async () => {
   try {

@@ -193,6 +193,8 @@ private class VoiceTurnApi(
         throw UnsupportedOperationException()
     override suspend fun regenerateRetryFeedback(conversationId: String, answerMessageId: String): RetryResponseDto =
         throw UnsupportedOperationException()
+    override suspend fun transcribeAudio(audio: MultipartBody.Part): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        throw UnsupportedOperationException()
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)

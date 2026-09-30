@@ -1,6 +1,7 @@
 package id.hanifalfaqih.aienglishinterview.feature.feedback
 
 import id.hanifalfaqih.aienglishinterview.core.monetization.FakeMonetization
+import id.hanifalfaqih.aienglishinterview.core.voice.FakeVoiceRecognizer
 import id.hanifalfaqih.aienglishinterview.data.model.AnswerFeedback
 import id.hanifalfaqih.aienglishinterview.data.remote.ConversationStateDto
 import id.hanifalfaqih.aienglishinterview.data.remote.CreateConversationRequest
@@ -51,7 +52,7 @@ private class M12FakeApi(
     items: List<AnswerFeedbackItemDto>,
 ) : InterviewApi {
     var submitScript: suspend (SubmitRetryRequestDto) -> Response<RetryResponseDto> =
-        { Response.success(201, retryDto(it.answerMessageId)) }
+        { Response.success(201, retryDto(it.answerMessageId, retryAnswer = it.retryAnswer)) }
     val submitRequests = mutableListOf<SubmitRetryRequestDto>()
     var regenerateCalls = 0
     var currentRetryCalls = 0
@@ -120,6 +121,17 @@ private class M12FakeApi(
         return retryDto(answerMessageId)
     }
 
+    var transcribeScript: suspend (ByteArray) -> id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        { id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse("Transcribed answer.") }
+    var transcribeCalls = 0
+
+    override suspend fun transcribeAudio(audio: okhttp3.MultipartBody.Part): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse {
+        transcribeCalls++
+        val buffer = okio.Buffer()
+        audio.body.writeTo(buffer)
+        return transcribeScript(buffer.readByteArray())
+    }
+
     companion object {
         fun retryDto(
             answerId: String,
@@ -131,13 +143,14 @@ private class M12FakeApi(
                 professionalCommunication = null,
             ),
             status: String = "generated",
+            retryAnswer: String = "Injected retry answer.",
         ) = RetryResponseDto(
             id = "retry-$answerId",
             conversationId = "conv-1",
             answerMessageId = answerId,
             questionMessageId = "q-$answerId",
             retryClientKey = "server-key-$answerId",
-            retryAnswer = "Injected retry answer.",
+            retryAnswer = retryAnswer,
             feedback = feedback,
             feedbackStatus = status,
             feedbackPromptVersion = "retry-feedback-1.0.0",
@@ -184,48 +197,71 @@ class M12IntegrationReviewTest {
         Dispatchers.resetMain()
     }
 
+    private data class TestStack(
+        val vm: FeedbackViewModel,
+        val recognizer: FakeVoiceRecognizer,
+        val api: M12FakeApi,
+        val monetization: FakeMonetization
+    )
+
     private fun stack(
         items: List<AnswerFeedbackItemDto> = listOf(itemDto("u1", true)),
         premium: Boolean = true,
-    ): Triple<FeedbackViewModel, M12FakeApi, FakeMonetization> {
+    ): TestStack {
         val api = M12FakeApi(items)
         val monetization = FakeMonetization(isPremium = premium)
+        val recognizer = FakeVoiceRecognizer()
         val vm = FeedbackViewModel(
             "conv-1",
             FeedbackRepository(api),
             ConversationRepository(api),
             monetization,
             RetryRepository(api),
+            recognizer,
         )
-        return Triple(vm, api, monetization)
+        return TestStack(vm, recognizer, api, monetization)
+    }
+
+    /**
+     * Helper to trigger voice retry flow: start voice input and emit audio
+     */
+    private fun triggerVoiceRetry(
+        stack: TestStack,
+        item: AnswerFeedback,
+        audio: ByteArray = byteArrayOf(1, 2, 3),
+    ) {
+        stack.vm.startVoiceInput(item)
+        stack.recognizer.emitAudio(audio)
     }
 
     // --- Scenario A: ineligible item ---
 
     @Test
     fun scenarioA_ineligible_noAffordanceNoGateNoPost() = runTest(dispatcher) {
-        val (vm, api, monetization) = stack(items = listOf(itemDto("u1", false)), premium = false)
+        val testStack = stack(items = listOf(itemDto("u1", false)), premium = false)
+        val (vm, recognizer, api, monetization) = testStack
         advanceUntilIdle()
         val refreshes = monetization.refreshCalls
         val item = domainItem("u1", false)
 
         assertFalse(item.shouldShowRetryAffordance())
         vm.requestPractice(item)
-        vm.startRetry(item, "An answer.")
+        triggerVoiceRetry(testStack, item, "An answer.".toByteArray())
         advanceUntilIdle()
 
         assertEquals(refreshes, monetization.refreshCalls) // no monetization touch
         assertFalse(vm.retryGateRequiresPurchase) // no paywall event
         assertNull(vm.practiceFormTarget) // no form
         assertEquals(0, api.submitRequests.size) // no retry POST
-        assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error) // safe refusal
+        assertTrue(vm.retryStates["u1"] == null || vm.retryStates["u1"] is AnswerRetryState.Idle) // safe refusal
     }
 
     // --- Scenario B: eligible + non-premium ---
 
     @Test
     fun scenarioB_eligibleNonPremium_paywallOnceNoPost() = runTest(dispatcher) {
-        val (vm, api, monetization) = stack(premium = false)
+        val testStack = stack(premium = false)
+        val (vm, _, api, monetization) = testStack
         advanceUntilIdle()
         val item = domainItem("u1", true)
         assertTrue(item.shouldShowRetryAffordance())
@@ -247,7 +283,8 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioC_premium_successFullContract() = runTest(dispatcher) {
-        val (vm, api, _) = stack(premium = true)
+        val testStack = stack(premium = true)
+        val (vm, recognizer, api, _) = testStack
         advanceUntilIdle()
         val before = (vm.uiState as FeedbackUiState.Content).feedback
         val item = domainItem("u1", true)
@@ -257,14 +294,14 @@ class M12IntegrationReviewTest {
         assertEquals("u1", vm.practiceFormTarget) // form available
         assertFalse(vm.retryGateRequiresPurchase) // no paywall
 
-        vm.startRetry(item, "Injected retry answer.")
+        triggerVoiceRetry(testStack, item)
         advanceUntilIdle()
 
         assertEquals(1, api.submitRequests.size)
         val req = api.submitRequests.single()
         assertEquals("u1", req.answerMessageId)
         assertEquals("q-u1", req.questionMessageId)
-        assertEquals("Injected retry answer.", req.retryAnswer)
+        assertEquals("Transcribed answer.", req.retryAnswer)
         assertTrue(req.retryClientKey.isNotBlank())
         assertTrue(req.retryClientKey != req.answerMessageId)
         assertTrue(req.retryClientKey != req.questionMessageId)
@@ -278,7 +315,7 @@ class M12IntegrationReviewTest {
         assertEquals("u1", retry.answerMessageId)
         assertEquals("q-u1", retry.questionMessageId)
         assertEquals("server-key-u1", retry.retryClientKey)
-        assertEquals("Injected retry answer.", retry.retryAnswer)
+        assertEquals("Transcribed answer.", retry.retryAnswer)
         assertEquals("generated", retry.feedbackStatus)
         assertEquals("retry-feedback-1.0.0", retry.feedbackPromptVersion)
         assertEquals("Original question?", retry.originalQuestion)
@@ -321,11 +358,12 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioD_http200_sameSemanticsSingleRequest() = runTest(dispatcher) {
-        val (vm, api, _) = stack(premium = true)
+        val testStack = stack(premium = true)
+        val (vm, _, api, _) = testStack
         advanceUntilIdle()
         api.submitScript = { Response.success(200, M12FakeApi.retryDto(it.answerMessageId)) }
 
-        vm.startRetry(domainItem("u1", true), "Injected retry answer.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
 
         assertEquals(1, api.submitRequests.size)
@@ -336,21 +374,22 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioE_failedStatus_noFabricatedFeedback_regenerateExposed() = runTest(dispatcher) {
-        val (vm, api, _) = stack(premium = true)
+        val testStack = stack(premium = true)
+        val (vm, _, api, _) = testStack
         advanceUntilIdle()
         val before = (vm.uiState as FeedbackUiState.Content).feedback
         api.submitScript = {
             Response.success(
                 201,
-                M12FakeApi.retryDto(it.answerMessageId, feedback = null, status = "failed"),
+                M12FakeApi.retryDto(it.answerMessageId, feedback = null, status = "failed", retryAnswer = it.retryAnswer),
             )
         }
 
-        vm.startRetry(domainItem("u1", true), "Injected retry answer.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
 
         val state = vm.retryStates["u1"] as AnswerRetryState.FeedbackFailed
-        assertEquals("Injected retry answer.", state.retry.retryAnswer) // answer intact
+        assertEquals("Transcribed answer.", state.retry.retryAnswer) // answer intact
         assertNull(state.retry.feedback) // nothing fabricated
         assertEquals(before, (vm.uiState as FeedbackUiState.Content).feedback)
 
@@ -364,25 +403,26 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioF_errorsPreserveSemanticsAndRecover() = runTest(dispatcher) {
-        val (vm, api, _) = stack(premium = true)
+        val testStack = stack(premium = true)
+        val (vm, _, api, _) = testStack
         advanceUntilIdle()
         val before = (vm.uiState as FeedbackUiState.Content).feedback
 
         api.submitScript = { Response.error(409, "".toResponseBody()) }
-        vm.startRetry(domainItem("u1", true), "Answer.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
         val conflict = vm.retryStates["u1"] as AnswerRetryState.Error
         assertEquals(409, conflict.httpCode)
 
         api.submitScript = { Response.error(500, "".toResponseBody()) }
-        vm.startRetry(domainItem("u1", true), "Answer.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
         val server = vm.retryStates["u1"] as AnswerRetryState.Error
         assertEquals(500, server.httpCode)
         assertEquals(before, (vm.uiState as FeedbackUiState.Content).feedback)
 
         api.submitScript = { Response.success(201, M12FakeApi.retryDto(it.answerMessageId)) }
-        vm.startRetry(domainItem("u1", true), "Answer.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable) // recovery
     }
@@ -391,19 +431,20 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioG_independentPerItemStates() = runTest(dispatcher) {
-        val (vm, api, _) = stack(
+        val testStack = stack(
             items = listOf(itemDto("u1", true), itemDto("u2", true), itemDto("u3", false)),
             premium = true,
         )
+        val (vm, recognizer, api, _) = testStack
         advanceUntilIdle()
 
-        vm.startRetry(domainItem("u1", true), "Answer A.")
+        triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
         assertNull(vm.retryStates["u2"])
         assertNull(vm.retryStates["u3"])
 
-        vm.startRetry(domainItem("u2", true), "Answer B.")
+        triggerVoiceRetry(testStack, domainItem("u2", true))
         advanceUntilIdle()
         assertTrue(vm.retryStates["u2"] is AnswerRetryState.FeedbackAvailable)
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
@@ -412,17 +453,18 @@ class M12IntegrationReviewTest {
         assertEquals(listOf("q-u1", "q-u2"), api.submitRequests.map { it.questionMessageId })
         assertTrue(api.submitRequests[0].retryClientKey != api.submitRequests[1].retryClientKey)
 
-        vm.startRetry(domainItem("u3", false), "Answer C.")
+        // Ineligible item: should not even start voice input
+        vm.startVoiceInput(domainItem("u3", false))
         advanceUntilIdle()
         assertEquals(2, api.submitRequests.size) // ineligible never posts
-        assertTrue(vm.retryStates["u3"] is AnswerRetryState.Error)
+        assertTrue(vm.retryStates["u3"] == null || vm.retryStates["u3"] is AnswerRetryState.Idle)
     }
 
     // --- Scenario H: M15 regression ---
 
     @Test
     fun scenarioH_m15SeparateFromM12() = runTest(dispatcher) {
-        val (vm, api, _) = stack(items = listOf(itemDto("u1", false)), premium = true)
+        val (vm, _, api, _) = stack(items = listOf(itemDto("u1", false)), premium = true)
         advanceUntilIdle()
 
         vm.practiceAgain()
@@ -435,7 +477,7 @@ class M12IntegrationReviewTest {
 
     @Test
     fun scenarioH_m15NonPremiumStillGated() = runTest(dispatcher) {
-        val (vm, api, _) = stack(items = listOf(itemDto("u1", false)), premium = false)
+        val (vm, _, api, _) = stack(items = listOf(itemDto("u1", false)), premium = false)
         advanceUntilIdle()
 
         vm.practiceAgain()
@@ -452,7 +494,7 @@ class M12IntegrationReviewTest {
     fun truthTable_gate1ThenGate2() = runTest(dispatcher) {
         // false/false and false/true: gate 2 never evaluated.
         for (premium in listOf(false, true)) {
-            val (vm, _, monetization) = stack(items = listOf(itemDto("u1", false)), premium = premium)
+            val (vm, _, _, monetization) = stack(items = listOf(itemDto("u1", false)), premium = premium)
             advanceUntilIdle()
             val refreshes = monetization.refreshCalls
             vm.requestPractice(domainItem("u1", false))
@@ -463,7 +505,7 @@ class M12IntegrationReviewTest {
         }
         // true/false: paywall.
         run {
-            val (vm, _, _) = stack(items = listOf(itemDto("u1", true)), premium = false)
+            val (vm, _, _, _) = stack(items = listOf(itemDto("u1", true)), premium = false)
             advanceUntilIdle()
             vm.requestPractice(domainItem("u1", true))
             advanceUntilIdle()
@@ -472,7 +514,7 @@ class M12IntegrationReviewTest {
         }
         // true/true: retry allowed.
         run {
-            val (vm, _, _) = stack(items = listOf(itemDto("u1", true)), premium = true)
+            val (vm, _, _, _) = stack(items = listOf(itemDto("u1", true)), premium = true)
             advanceUntilIdle()
             vm.requestPractice(domainItem("u1", true))
             advanceUntilIdle()
@@ -486,14 +528,16 @@ class M12IntegrationReviewTest {
     @Test
     fun stateMachine_duplicateTapsSingleRequest() = runTest(dispatcher) {
         val gate = kotlinx.coroutines.CompletableDeferred<Response<RetryResponseDto>>()
-        val (vm, api, _) = stack(premium = true)
+        val testStack = stack(premium = true)
+        val (vm, recognizer, api, _) = testStack
         advanceUntilIdle()
         api.submitScript = { gate.await() }
 
         val item = domainItem("u1", true)
-        vm.startRetry(item, "Answer.")
-        vm.startRetry(item, "Answer.")
-        vm.startRetry(item, "Answer.")
+        vm.startVoiceInput(item)
+        recognizer.emitAudio(byteArrayOf(1, 2, 3))
+        recognizer.emitAudio(byteArrayOf(4, 5, 6))
+        recognizer.emitAudio(byteArrayOf(7, 8, 9))
         dispatcher.scheduler.advanceUntilIdle()
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.Submitting)
         assertEquals(1, api.submitRequests.size)

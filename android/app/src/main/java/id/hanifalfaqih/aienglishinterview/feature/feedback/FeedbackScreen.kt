@@ -2,6 +2,7 @@ package id.hanifalfaqih.aienglishinterview.feature.feedback
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -111,9 +112,8 @@ fun FeedbackScreen(
                     practiceFormTarget = viewModel.practiceFormTarget,
                     onGoPremium = onGoPremium,
                     onBack = onBack,
-                    onRequestPractice = { item -> viewModel.requestPractice(item) },
-                    onClosePractice = { viewModel.closePracticeForm() },
-                    onSubmitRetry = { item, answer -> viewModel.startRetry(item, answer) },
+                    onRequestPractice = { item -> viewModel.startVoiceInput(item) },
+                    onClosePractice = { viewModel.cancelVoiceInput() },
                     onRegenerateRetry = { item -> viewModel.regenerateRetry(item.answerMessageId) },
                     modifier = Modifier.weight(1f),
                 )
@@ -190,7 +190,6 @@ private fun FeedbackContent(
     onBack: () -> Unit,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
-    onSubmitRetry: (AnswerFeedback, String) -> Unit,
     onRegenerateRetry: (AnswerFeedback) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -233,7 +232,6 @@ private fun FeedbackContent(
                         formOpen = practiceFormTarget == item.answerMessageId,
                         onRequestPractice = onRequestPractice,
                         onClosePractice = onClosePractice,
-                        onSubmitRetry = { answer -> onSubmitRetry(item, answer) },
                         onRegenerateRetry = { onRegenerateRetry(item) },
                     )
                 }
@@ -336,11 +334,8 @@ private fun AnswerFeedbackCard(
     formOpen: Boolean,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
-    onSubmitRetry: (String) -> Unit,
     onRegenerateRetry: () -> Unit,
 ) {
-    var draft by remember(item.answerMessageId) { mutableStateOf("") }
-
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             if (item.questionText != null) {
@@ -375,14 +370,8 @@ private fun AnswerFeedbackCard(
                 TargetedPracticeSection(
                     retryState = retryState,
                     formOpen = formOpen,
-                    draft = draft,
-                    onDraftChange = { draft = it },
                     onPracticeThis = { onRequestPractice(item) },
-                    onCancel = {
-                        onClosePractice()
-                        draft = ""
-                    },
-                    onSubmit = { onSubmitRetry(draft) },
+                    onCancel = onClosePractice,
                     onRegenerate = onRegenerateRetry,
                 )
             }
@@ -399,11 +388,8 @@ private fun AnswerFeedbackCard(
 private fun TargetedPracticeSection(
     retryState: AnswerRetryState,
     formOpen: Boolean,
-    draft: String,
-    onDraftChange: (String) -> Unit,
     onPracticeThis: () -> Unit,
     onCancel: () -> Unit,
-    onSubmit: () -> Unit,
     onRegenerate: () -> Unit,
 ) {
     Column(
@@ -443,22 +429,19 @@ private fun TargetedPracticeSection(
             }
             is AnswerRetryState.Idle -> Unit
         }
-        // The form stays available for (re)submission whenever no request
-        // is in flight; the draft is preserved across submissions.
+        // Voice-only retry: no text draft, just record and submit
         if (retryState !is AnswerRetryState.Submitting) {
             if (formOpen) {
                 RetryInputForm(
-                    draft = draft,
-                    onDraftChange = onDraftChange,
                     onCancel = onCancel,
-                    onSubmit = onSubmit,
+                    onSubmit = onPracticeThis,
                 )
             } else if (retryState is AnswerRetryState.Idle) {
                 OutlinedButton(onClick = onPracticeThis) {
                     Text("Practice this")
                 }
             } else if (retryState is AnswerRetryState.Error) {
-                TextButton(onClick = onSubmit) {
+                TextButton(onClick = onPracticeThis) {
                     Text("Try Again")
                 }
             }
@@ -521,7 +504,6 @@ private fun RetryAffordancePreview() {
             formOpen = false,
             onRequestPractice = {},
             onClosePractice = {},
-            onSubmitRetry = {},
             onRegenerateRetry = {},
         )
     }
@@ -537,7 +519,6 @@ private fun RetryFeedbackPreview() {
             formOpen = false,
             onRequestPractice = {},
             onClosePractice = {},
-            onSubmitRetry = {},
             onRegenerateRetry = {},
         )
     }
@@ -545,29 +526,27 @@ private fun RetryFeedbackPreview() {
 
 @Composable
 private fun RetryInputForm(
-    draft: String,
-    onDraftChange: (String) -> Unit,
     onCancel: () -> Unit,
     onSubmit: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            label = { Text("Your retry answer") },
-            supportingText = { Text("Answer the question above again in your own words.") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3,
+        Text(
+            text = "Speak your answer",
+            style = MaterialTheme.typography.bodyMedium,
         )
-        TextButton(onClick = onCancel) {
-            Text("Cancel")
-        }
-        OutlinedButton(
-            onClick = onSubmit,
-            enabled = draft.isNotBlank(),
+        Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Submit retry")
+            OutlinedButton(
+                onClick = onSubmit,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Record")
+            }
+            TextButton(onClick = onCancel) {
+                Text("Cancel")
+            }
         }
     }
 }

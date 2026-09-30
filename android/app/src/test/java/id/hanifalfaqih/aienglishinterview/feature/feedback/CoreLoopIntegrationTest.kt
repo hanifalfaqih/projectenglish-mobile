@@ -170,6 +170,8 @@ private class CoreLoopApi(
         conversationId: String,
         answerMessageId: String,
     ): RetryResponseDto = throw UnsupportedOperationException()
+    override suspend fun transcribeAudio(audio: okhttp3.MultipartBody.Part): id.hanifalfaqih.aienglishinterview.data.remote.TranscriptionResponse =
+        throw UnsupportedOperationException()
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)

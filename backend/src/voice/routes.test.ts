@@ -1,8 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
-import { registerVoiceRoutes } from "./routes.js";
-import { VoiceNoSpeechError, VoiceAudioTooLargeError, VoiceTurnService, type VoiceTurnResult } from "./service.js";
+import { registerTranscriptionRoutes, registerVoiceRoutes } from "./routes.js";
+import {
+  VoiceNoSpeechError,
+  VoiceAudioTooLargeError,
+  VoiceAudioInvalidError,
+  VoiceTurnService,
+  type TranscribeResult,
+  type VoiceTurnResult,
+} from "./service.js";
 import {
   ConversationClosedError,
   ConversationNotFoundError,
@@ -385,6 +392,157 @@ describe("POST /conversations/:id/voice-turn timing hygiene", () => {
     );
     expect(res.statusCode).toBe(200);
     expect(res.json()).not.toHaveProperty("timings");
+    await app.close();
+  });
+});
+
+/** Builds a service double exposing ONLY transcribeOnly, so an accidental
+ * turn/TTS call in the transcription path fails loudly. */
+function buildTranscribeService(
+  transcribeOnly: (input: { pcm: Uint8Array }) => Promise<TranscribeResult>,
+): VoiceTurnService {
+  return { transcribeOnly: vi.fn(transcribeOnly) } as unknown as VoiceTurnService;
+}
+
+function buildTranscribeApp(service: VoiceTurnService): FastifyInstance {
+  const app = Fastify();
+  void app.register(multipart);
+  registerTranscriptionRoutes(app, { service });
+  return app;
+}
+
+describe("POST /transcription", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function post(app: FastifyInstance, body: Buffer) {
+    return app.inject({
+      method: "POST",
+      url: "/transcription",
+      headers: { "content-type": `multipart/form-data; boundary=${BOUNDARY}` },
+      payload: body,
+    });
+  }
+
+  it("returns 200 with only the transcript", async () => {
+    const service = buildTranscribeService(async () => ({
+      transcript: "I led the Android migration.",
+    }));
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "audio", file: Buffer.from([1, 2, 3, 4]) }]),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ transcript: "I led the Android migration." });
+    await app.close();
+  });
+
+  it("passes the uploaded audio bytes through untouched", async () => {
+    const pcm = Buffer.from([9, 8, 7, 6]);
+    let seen: Uint8Array | null = null;
+    const service = buildTranscribeService(async (input) => {
+      seen = input.pcm;
+      return { transcript: "ok" };
+    });
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(app, multipartBody([{ name: "audio", file: pcm }]));
+
+    expect(res.statusCode).toBe(200);
+    expect(Buffer.from(seen as unknown as Uint8Array)).toEqual(pcm);
+    await app.close();
+  });
+
+  it("never creates a conversation turn and needs no conversation id", async () => {
+    // The URL carries no :id at all, and the service double exposes only
+    // transcribeOnly — a voiceTurn call would throw.
+    const service = buildTranscribeService(async () => ({ transcript: "ok" }));
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "audio", file: Buffer.from([1]) }]),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(service.transcribeOnly).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("returns 400 when audio is missing", async () => {
+    const service = buildTranscribeService(async () => ({ transcript: "ok" }));
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "notAudio", value: "x" }]),
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(service.transcribeOnly).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it.each([
+    [new VoiceNoSpeechError(), 422],
+    [new VoiceAudioInvalidError("Empty voice audio"), 400],
+    [new VoiceAudioTooLargeError(999), 413],
+    [new ProviderTimeoutError("slow"), 504],
+    [new ProviderError("down"), 502],
+    [new Error("boom"), 500],
+  ])("maps %s to the documented status", async (error, status) => {
+    const service = buildTranscribeService(async () => {
+      throw error;
+    });
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "audio", file: Buffer.from([1]) }]),
+    );
+
+    expect(res.statusCode).toBe(status);
+    await app.close();
+  });
+
+  it("returns the no_speech code on 422 like voice-turn", async () => {
+    const service = buildTranscribeService(async () => {
+      throw new VoiceNoSpeechError();
+    });
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "audio", file: Buffer.from([1]) }]),
+    );
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toEqual({ error: "No speech detected", code: "no_speech" });
+    await app.close();
+  });
+
+  it("does not leak server timings or internals", async () => {
+    const service = buildTranscribeService(async () => ({ transcript: "ok" }));
+    const app = buildTranscribeApp(service);
+    await app.ready();
+
+    const res = await post(
+      app,
+      multipartBody([{ name: "audio", file: Buffer.from([1]) }]),
+    );
+
+    const body = res.json() as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(["transcript"]);
     await app.close();
   });
 });
