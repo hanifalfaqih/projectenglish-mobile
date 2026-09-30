@@ -3,6 +3,7 @@ import {
   ConversationService,
   ConversationNotFoundError,
   ConversationClosedError,
+  OpeningAlreadyTakenError,
   ProviderError,
   TurnInProgressError,
 } from "./service.js";
@@ -1235,5 +1236,77 @@ describe("ConversationService — M20 practice context read", () => {
     expect(vi.mocked(repo.persistTurn).mock.calls[0][0]).toMatchObject({
       promptVersion: "2.0.0",
     });
+  });
+});
+
+describe("ConversationService.generateOpening", () => {
+  let repo: ConversationRepository;
+  let provider: LLMProvider;
+  let service: ConversationService;
+
+  beforeEach(() => {
+    repo = createMockRepo();
+    (repo as unknown as Record<string, unknown>)["loadAllMessages"] = vi.fn().mockResolvedValue([]);
+    provider = createMockProvider({
+      assistantMessage: "Hi! Tell me about your experience.",
+    });
+    service = new ConversationService({
+      repository: repo,
+      provider,
+      promptVersion: "1.0.0",
+    });
+  });
+
+  it("throws ConversationNotFoundError for unknown conversations", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(null);
+    await expect(service.generateOpening("missing")).rejects.toThrow(
+      ConversationNotFoundError,
+    );
+  });
+
+  it("generates with an empty transcript and persists the assistant message", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(makeConversation());
+    const result = await service.generateOpening("conv-1");
+    expect(result.assistantMessage).toBe("Hi! Tell me about your experience.");
+    expect(result.status).toBe("active");
+    expect(vi.mocked(provider.generateTurn).mock.calls[0][0]).toMatchObject({
+      messages: [],
+    });
+    expect(vi.mocked(repo.persistTurn)).toHaveBeenCalledOnce();
+    expect(vi.mocked(repo.persistTurn).mock.calls[0][0]).toMatchObject({
+      conversationId: "conv-1",
+      assistantMessage: "Hi! Tell me about your experience.",
+      close: false,
+    });
+  });
+
+  it("replays the existing opening instead of generating again", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(makeConversation());
+    (repo.loadAllMessages as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      makeMessage({ role: "assistant", content: "Welcome back." }),
+    ]);
+    const result = await service.generateOpening("conv-1");
+    expect(result.assistantMessage).toBe("Welcome back.");
+    expect(provider.generateTurn).not.toHaveBeenCalled();
+    expect(repo.persistTurn).not.toHaveBeenCalled();
+  });
+
+  it("throws OpeningAlreadyTakenError once user turns exist", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(makeConversation());
+    (repo.loadAllMessages as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      makeMessage({ role: "assistant", content: "Hi." }),
+      makeMessage({ role: "user", content: "Hello" }),
+    ]);
+    await expect(service.generateOpening("conv-1")).rejects.toThrow(
+      OpeningAlreadyTakenError,
+    );
+  });
+
+  it("maps provider failure to ProviderError", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(makeConversation());
+    vi.mocked(provider.generateTurn).mockRejectedValue(new Error("llm down"));
+    await expect(service.generateOpening("conv-1")).rejects.toThrow(
+      ProviderError,
+    );
   });
 });

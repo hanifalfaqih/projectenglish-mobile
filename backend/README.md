@@ -7,14 +7,18 @@ journey. The main development repository remains the source of truth; this
 directory is a fixed artifact and is not developed further here.
 
 Covered API surface: `GET /health`, `POST /experience-profiles`,
-`POST /conversations`, `POST /conversations/:id/turns`,
+`POST /resume/parse`, `POST /conversations`, `POST /conversations/:id/turns`,
+`POST /conversations/:id/opening`, `POST /conversations/:id/voice-turn`,
 `GET /conversations/:id`, `POST /conversations/:id/feedback`,
-`GET /conversations/:id/feedback`. Retry, review, and learning endpoints
-from the main repository are intentionally not part of this snapshot.
+`GET /conversations/:id/feedback`, `POST /conversations/:id/retries`,
+`GET /conversations/:id/retries/:answerMessageId`,
+`POST /conversations/:id/retries/:answerMessageId/feedback`. Review and
+learning endpoints from the main repository are intentionally not part of
+this snapshot.
 
 ## Prerequisites
 
-- Node.js >= 20
+- Node.js >= 22 (required by `unpdf`, used by `POST /resume/parse`)
 - pnpm >= 9
 - PostgreSQL >= 14 (operator-provided; see below)
 - A DashScope / Qwen-compatible API key (operator-provided; see below)

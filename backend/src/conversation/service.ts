@@ -23,6 +23,13 @@ export class ConversationClosedError extends Error {
   }
 }
 
+export class OpeningAlreadyTakenError extends Error {
+  constructor(public readonly conversationId: string) {
+    super(`Opening already taken for conversation: ${conversationId}`);
+    this.name = "OpeningAlreadyTakenError";
+  }
+}
+
 export class ProviderError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
@@ -67,6 +74,13 @@ export interface TurnRequest {
 }
 
 export interface TurnResult {
+  assistantMessage: string;
+  state: ConversationState;
+  status: "active" | "closed";
+  closing: boolean;
+}
+
+export interface OpeningResult {
   assistantMessage: string;
   state: ConversationState;
   status: "active" | "closed";
@@ -138,6 +152,111 @@ export class ConversationService {
       id: conversation.id,
       status: conversation.status,
       state: conversation.state,
+    };
+  }
+
+  /**
+   * AI-first opening: generates the interviewer's first message for a fresh
+   * conversation (empty transcript, intro phase, experience-grounded) and
+   * persists it as the opening assistant message. Idempotent replay: when
+   * the conversation holds only that opening message, it is returned
+   * without generating again. Anything beyond the opening (user turns)
+   * rejects with OpeningAlreadyTakenError.
+   */
+  async generateOpening(conversationId: string): Promise<OpeningResult> {
+    const { repository, provider } = this.deps;
+    const promptVersion = this.deps.promptVersion ?? PROMPT_VERSION;
+
+    const conversation = await repository.findById(conversationId);
+    if (!conversation) {
+      throw new ConversationNotFoundError(conversationId);
+    }
+    if (conversation.status === "closed") {
+      throw new ConversationClosedError(conversationId);
+    }
+
+    const existing = await repository.loadAllMessages(conversationId);
+    if (existing.length > 0) {
+      const onlyOpening =
+        existing.length === 1 && existing[0]?.role === "assistant";
+      if (!onlyOpening) {
+        throw new OpeningAlreadyTakenError(conversationId);
+      }
+      return {
+        assistantMessage: existing[0].content,
+        state: conversation.state,
+        status: conversation.status,
+        closing: false,
+      };
+    }
+
+    let experience: ExperienceProfile | undefined;
+    if (conversation.experienceProfileId && this.deps.experienceProfiles) {
+      experience =
+        (await this.deps.experienceProfiles.findById(
+          conversation.experienceProfileId,
+        )) ?? undefined;
+    }
+
+    let practiceContext: PracticeContextItem[] | undefined;
+    if (conversation.experienceProfileId && this.deps.practiceContext) {
+      const items = await this.deps.practiceContext.findForExperienceProfile(
+        conversation.experienceProfileId,
+      );
+      if (items.length > 0) practiceContext = items;
+    }
+
+    const systemPrompt = buildSystemPrompt({
+      state: conversation.state,
+      transcript: [],
+      experience,
+      practiceContext,
+    });
+
+    let turnOutput;
+    try {
+      turnOutput = await provider.generateTurn({
+        systemPrompt,
+        state: conversation.state,
+        messages: [],
+      });
+    } catch (err) {
+      if (err instanceof ProviderTimeoutError) throw err;
+      throw new ProviderError("LLM provider failed", err);
+    }
+
+    if (
+      !turnOutput ||
+      typeof turnOutput.assistantMessage !== "string" ||
+      turnOutput.assistantMessage.length === 0
+    ) {
+      throw new ProviderError("Malformed LLM response: no assistant message");
+    }
+
+    const validation = validateProposal(
+      turnOutput.proposal,
+      conversation.state,
+    );
+    const nextState = mergeState(
+      conversation.state,
+      validation.valid ? validation.proposal : null,
+      turnOutput.assistantMessage,
+    );
+
+    await repository.persistTurn({
+      conversationId,
+      assistantMessage: turnOutput.assistantMessage,
+      promptVersion,
+      state: nextState,
+      stateVersion: conversation.stateVersion + 1,
+      close: false,
+    });
+
+    return {
+      assistantMessage: turnOutput.assistantMessage,
+      state: nextState,
+      status: "active",
+      closing: false,
     };
   }
 
