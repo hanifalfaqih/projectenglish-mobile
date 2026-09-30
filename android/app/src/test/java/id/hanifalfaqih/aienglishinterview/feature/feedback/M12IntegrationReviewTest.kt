@@ -441,7 +441,7 @@ class M12IntegrationReviewTest {
         triggerVoiceRetry(testStack, domainItem("u1", true))
         advanceUntilIdle()
         assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
-        assertNull(vm.retryStates["u2"])
+        assertTrue(vm.retryStates["u2"] is AnswerRetryState.Idle)
         assertNull(vm.retryStates["u3"])
 
         triggerVoiceRetry(testStack, domainItem("u2", true))

@@ -170,10 +170,17 @@ class FeedbackViewModel(
         }
     }
 
-    fun cancelVoiceInput() {
+    fun finishVoiceInput() {
+        // Graceful stop: let FinalAudio flow through to submitVoiceRetry()
         recognizer?.stopListening()
+        // Don't clear retryTarget or practiceFormTarget
+    }
+
+    fun cancelVoiceInput() {
+        // Discard recording: clear state before FinalAudio arrives
         retryTarget = null
         practiceFormTarget = null
+        recognizer?.stopListening()
         if (voicePhase == VoicePhase.LISTENING) {
             voicePhase = VoicePhase.IDLE
         }
@@ -192,6 +199,12 @@ class FeedbackViewModel(
             when (val result = repository.generateFeedback(conversationId)) {
                 is ApiResult.Success -> {
                     uiState = FeedbackUiState.Content(result.value.feedback)
+                    // Load any persisted retries for eligible answer items
+                    result.value.feedback.answerItems
+                        .filter { it.practiceOpportunity }
+                        .forEach { item ->
+                            loadCurrentRetry(item.answerMessageId)
+                        }
                 }
                 is ApiResult.Error -> {
                     uiState = FeedbackUiState.Error(result.message)

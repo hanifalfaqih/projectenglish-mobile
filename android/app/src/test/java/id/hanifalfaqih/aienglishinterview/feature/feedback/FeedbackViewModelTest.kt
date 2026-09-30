@@ -101,7 +101,9 @@ private class ScriptedFeedbackApi(
     ): RetryResponseDto = getCurrentRetryScript(conversationId, answerMessageId)
 
     var getCurrentRetryScript: suspend (String, String) -> RetryResponseDto =
-        { _, _ -> throw UnsupportedOperationException() }
+        { _, _ -> throw retrofit2.HttpException(
+            retrofit2.Response.error<Any>(404, "".toResponseBody())
+        ) }
 
     override suspend fun regenerateRetryFeedback(
         conversationId: String,

@@ -106,16 +106,31 @@ fun FeedbackScreen(
     }
 
     fun requestPracticeWithPermission(item: AnswerFeedback) {
-        val granted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) {
-            viewModel.startVoiceInput(item)
-        } else {
-            // Set the form target first so the permission callback knows what to start
-            viewModel.requestPractice(item)
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        // Check entitlement first - only premium users should see permission dialog
+        when (val state = monetization.premiumState.value) {
+            is PremiumState.Determined -> {
+                if (!state.isPremium) {
+                    // Free user - route to paywall, no permission request
+                    viewModel.requestPractice(item)
+                    return
+                }
+                // Premium user - check permission
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    viewModel.startVoiceInput(item)
+                } else {
+                    // Set the form target first so the permission callback knows what to start
+                    viewModel.requestPractice(item)
+                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+            is PremiumState.Loading, is PremiumState.Unavailable -> {
+                // Unresolved entitlement - show error, no permission request
+                viewModel.requestPractice(item)
+            }
         }
     }
     Column(
@@ -159,6 +174,7 @@ fun FeedbackScreen(
                     onBack = onBack,
                     onRequestPractice = { item -> requestPracticeWithPermission(item) },
                     onClosePractice = { viewModel.cancelVoiceInput() },
+                    onFinishRecording = { viewModel.finishVoiceInput() },
                     onRegenerateRetry = { item -> viewModel.regenerateRetry(item.answerMessageId) },
                     modifier = Modifier.weight(1f),
                 )
@@ -237,6 +253,7 @@ private fun FeedbackContent(
     onBack: () -> Unit,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
+    onFinishRecording: () -> Unit,
     onRegenerateRetry: (AnswerFeedback) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -281,6 +298,7 @@ private fun FeedbackContent(
                         voiceError = if (practiceFormTarget == item.answerMessageId) voiceError else null,
                         onRequestPractice = onRequestPractice,
                         onClosePractice = onClosePractice,
+                        onFinishRecording = onFinishRecording,
                         onRegenerateRetry = { onRegenerateRetry(item) },
                     )
                 }
@@ -385,6 +403,7 @@ private fun AnswerFeedbackCard(
     voiceError: String?,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
+    onFinishRecording: () -> Unit,
     onRegenerateRetry: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -425,6 +444,7 @@ private fun AnswerFeedbackCard(
                     voiceError = voiceError,
                     onPracticeThis = { onRequestPractice(item) },
                     onCancel = onClosePractice,
+                    onFinishRecording = onFinishRecording,
                     onRegenerate = onRegenerateRetry,
                 )
             }
@@ -445,6 +465,7 @@ private fun TargetedPracticeSection(
     voiceError: String?,
     onPracticeThis: () -> Unit,
     onCancel: () -> Unit,
+    onFinishRecording: () -> Unit,
     onRegenerate: () -> Unit,
 ) {
     Column(
@@ -492,7 +513,7 @@ private fun TargetedPracticeSection(
                     voiceError = voiceError,
                     onCancel = onCancel,
                     onStartRecording = onPracticeThis,
-                    onStopRecording = onCancel,
+                    onStopRecording = onFinishRecording,
                 )
             } else if (retryState is AnswerRetryState.Idle) {
                 OutlinedButton(onClick = onPracticeThis) {
@@ -564,6 +585,7 @@ private fun RetryAffordancePreview() {
             voiceError = null,
             onRequestPractice = {},
             onClosePractice = {},
+            onFinishRecording = {},
             onRegenerateRetry = {},
         )
     }
@@ -581,6 +603,7 @@ private fun RetryFeedbackPreview() {
             voiceError = null,
             onRequestPractice = {},
             onClosePractice = {},
+            onFinishRecording = {},
             onRegenerateRetry = {},
         )
     }
