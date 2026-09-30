@@ -1,5 +1,9 @@
 package id.hanifalfaqih.aienglishinterview.feature.feedback
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,14 +27,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.hanifalfaqih.aienglishinterview.core.monetization.MonetizationProvider
 import id.hanifalfaqih.aienglishinterview.core.monetization.MonetizationRepository
 import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
+import id.hanifalfaqih.aienglishinterview.core.voice.VoicePhase
+import id.hanifalfaqih.aienglishinterview.core.voice.VoiceRecognizer
 import id.hanifalfaqih.aienglishinterview.data.model.AnswerFeedback
 import id.hanifalfaqih.aienglishinterview.data.model.Feedback
 import id.hanifalfaqih.aienglishinterview.data.model.Retry
@@ -46,10 +54,11 @@ internal fun AnswerFeedback.shouldShowRetryAffordance(): Boolean =
 
 private class FeedbackViewModelFactory(
     private val conversationId: String,
+    private val recognizer: VoiceRecognizer? = null,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return FeedbackViewModel(conversationId) as T
+        return FeedbackViewModel(conversationId, recognizer = recognizer) as T
     }
 }
 
@@ -65,16 +74,50 @@ fun FeedbackScreen(
     onGoPremium: () -> Unit,
     onPracticeAgain: (conversationId: String) -> Unit,
     modifier: Modifier = Modifier,
+    recognizer: VoiceRecognizer? = null,
     viewModel: FeedbackViewModel = viewModel(
-        factory = FeedbackViewModelFactory(conversationId),
+        factory = FeedbackViewModelFactory(conversationId, recognizer),
     ),
     monetization: MonetizationRepository = MonetizationProvider.repository,
 ) {
+    val context = LocalContext.current
     val premiumState by monetization.premiumState.collectAsState()
     LaunchedEffect(conversationId) {
         monetization.refresh()
     }
     val isPremium = (premiumState as? PremiumState.Determined)?.isPremium == true
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            // Permission granted — if there's a pending practice target, start voice input
+            val content = viewModel.uiState as? FeedbackUiState.Content
+            val target = viewModel.practiceFormTarget
+            if (content != null && target != null) {
+                val item = content.feedback.answerItems.find { it.answerMessageId == target }
+                if (item != null) {
+                    viewModel.startVoiceInput(item)
+                }
+            }
+        } else {
+            viewModel.onVoicePermissionDenied()
+        }
+    }
+
+    fun requestPracticeWithPermission(item: AnswerFeedback) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            viewModel.startVoiceInput(item)
+        } else {
+            // Set the form target first so the permission callback knows what to start
+            viewModel.requestPractice(item)
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -110,9 +153,11 @@ fun FeedbackScreen(
                     isPremium = isPremium,
                     retryStates = viewModel.retryStates,
                     practiceFormTarget = viewModel.practiceFormTarget,
+                    voicePhase = viewModel.voicePhase,
+                    voiceError = viewModel.voiceError,
                     onGoPremium = onGoPremium,
                     onBack = onBack,
-                    onRequestPractice = { item -> viewModel.startVoiceInput(item) },
+                    onRequestPractice = { item -> requestPracticeWithPermission(item) },
                     onClosePractice = { viewModel.cancelVoiceInput() },
                     onRegenerateRetry = { item -> viewModel.regenerateRetry(item.answerMessageId) },
                     modifier = Modifier.weight(1f),
@@ -186,6 +231,8 @@ private fun FeedbackContent(
     isPremium: Boolean,
     retryStates: Map<String, AnswerRetryState>,
     practiceFormTarget: String?,
+    voicePhase: VoicePhase,
+    voiceError: String?,
     onGoPremium: () -> Unit,
     onBack: () -> Unit,
     onRequestPractice: (AnswerFeedback) -> Unit,
@@ -230,6 +277,8 @@ private fun FeedbackContent(
                         retryState = retryStates[item.answerMessageId]
                             ?: AnswerRetryState.Idle,
                         formOpen = practiceFormTarget == item.answerMessageId,
+                        voicePhase = if (practiceFormTarget == item.answerMessageId) voicePhase else VoicePhase.IDLE,
+                        voiceError = if (practiceFormTarget == item.answerMessageId) voiceError else null,
                         onRequestPractice = onRequestPractice,
                         onClosePractice = onClosePractice,
                         onRegenerateRetry = { onRegenerateRetry(item) },
@@ -332,6 +381,8 @@ private fun AnswerFeedbackCard(
     item: AnswerFeedback,
     retryState: AnswerRetryState,
     formOpen: Boolean,
+    voicePhase: VoicePhase,
+    voiceError: String?,
     onRequestPractice: (AnswerFeedback) -> Unit,
     onClosePractice: () -> Unit,
     onRegenerateRetry: () -> Unit,
@@ -370,6 +421,8 @@ private fun AnswerFeedbackCard(
                 TargetedPracticeSection(
                     retryState = retryState,
                     formOpen = formOpen,
+                    voicePhase = voicePhase,
+                    voiceError = voiceError,
                     onPracticeThis = { onRequestPractice(item) },
                     onCancel = onClosePractice,
                     onRegenerate = onRegenerateRetry,
@@ -388,6 +441,8 @@ private fun AnswerFeedbackCard(
 private fun TargetedPracticeSection(
     retryState: AnswerRetryState,
     formOpen: Boolean,
+    voicePhase: VoicePhase,
+    voiceError: String?,
     onPracticeThis: () -> Unit,
     onCancel: () -> Unit,
     onRegenerate: () -> Unit,
@@ -433,8 +488,11 @@ private fun TargetedPracticeSection(
         if (retryState !is AnswerRetryState.Submitting) {
             if (formOpen) {
                 RetryInputForm(
+                    voicePhase = voicePhase,
+                    voiceError = voiceError,
                     onCancel = onCancel,
-                    onSubmit = onPracticeThis,
+                    onStartRecording = onPracticeThis,
+                    onStopRecording = onCancel,
                 )
             } else if (retryState is AnswerRetryState.Idle) {
                 OutlinedButton(onClick = onPracticeThis) {
@@ -502,6 +560,8 @@ private fun RetryAffordancePreview() {
             item = previewItem(practice = true),
             retryState = AnswerRetryState.Idle,
             formOpen = false,
+            voicePhase = VoicePhase.IDLE,
+            voiceError = null,
             onRequestPractice = {},
             onClosePractice = {},
             onRegenerateRetry = {},
@@ -517,6 +577,8 @@ private fun RetryFeedbackPreview() {
             item = previewItem(practice = true),
             retryState = AnswerRetryState.FeedbackAvailable(previewRetry()),
             formOpen = false,
+            voicePhase = VoicePhase.IDLE,
+            voiceError = null,
             onRequestPractice = {},
             onClosePractice = {},
             onRegenerateRetry = {},
@@ -526,25 +588,63 @@ private fun RetryFeedbackPreview() {
 
 @Composable
 private fun RetryInputForm(
+    voicePhase: VoicePhase,
+    voiceError: String?,
     onCancel: () -> Unit,
-    onSubmit: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            text = "Speak your answer",
+            text = when (voicePhase) {
+                VoicePhase.LISTENING -> "Listening… (tap Stop when done)"
+                VoicePhase.SPEAKING -> "Processing…"
+                VoicePhase.IDLE -> "Speak your answer"
+            },
             style = MaterialTheme.typography.bodyMedium,
         )
+        if (voiceError != null) {
+            Text(
+                text = voiceError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(
-                onClick = onSubmit,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Record")
+            when (voicePhase) {
+                VoicePhase.LISTENING -> {
+                    OutlinedButton(
+                        onClick = onStopRecording,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Stop")
+                    }
+                }
+                VoicePhase.SPEAKING -> {
+                    OutlinedButton(
+                        onClick = {},
+                        modifier = Modifier.weight(1f),
+                        enabled = false,
+                    ) {
+                        Text("Processing…")
+                    }
+                }
+                VoicePhase.IDLE -> {
+                    OutlinedButton(
+                        onClick = onStartRecording,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Record")
+                    }
+                }
             }
-            TextButton(onClick = onCancel) {
+            TextButton(
+                onClick = onCancel,
+                enabled = voicePhase != VoicePhase.SPEAKING,
+            ) {
                 Text("Cancel")
             }
         }

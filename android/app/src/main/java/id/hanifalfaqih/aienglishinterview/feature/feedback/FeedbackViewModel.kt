@@ -173,9 +173,15 @@ class FeedbackViewModel(
     fun cancelVoiceInput() {
         recognizer?.stopListening()
         retryTarget = null
+        practiceFormTarget = null
         if (voicePhase == VoicePhase.LISTENING) {
             voicePhase = VoicePhase.IDLE
         }
+    }
+
+    fun onVoicePermissionDenied() {
+        voiceError = "Microphone permission is required to record your answer."
+        voicePhase = VoicePhase.IDLE
     }
 
     fun load() {

@@ -187,6 +187,7 @@ fun AppNavHost(
         ) { backStackEntry ->
             val conversationId =
                 backStackEntry.arguments?.getString(Routes.ARG_CONVERSATION_ID).orEmpty()
+            val recognizer = remember(conversationId) { VoiceProviderFactory.recognizer() }
             FeedbackScreen(
                 conversationId = conversationId,
                 onBack = { navController.popBackStack() },
@@ -200,6 +201,7 @@ fun AppNavHost(
                         popUpTo(Routes.MY_EXPERIENCE) { inclusive = false }
                     }
                 },
+                recognizer = recognizer,
             )
         }
     }
