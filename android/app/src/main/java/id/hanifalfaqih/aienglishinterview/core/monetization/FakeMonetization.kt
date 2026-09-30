@@ -12,6 +12,13 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class FakeMonetization(
     isPremium: Boolean = false,
+    /**
+     * Explicit starting entitlement, overriding [isPremium] when non-null.
+     * Lets tests represent the unresolved states ([PremiumState.Loading] and
+     * [PremiumState.Unavailable]) that a real SDK can be in, not just a
+     * determined premium/free verdict.
+     */
+    initialState: PremiumState? = null,
     var offers: MonetizationResult<List<PaywallOffer>> = MonetizationResult.Success(
         listOf(PaywallOffer("monthly", "Premium Monthly", "$4.99")),
     ),
@@ -20,7 +27,7 @@ class FakeMonetization(
 ) : MonetizationRepository {
 
     private val _premiumState =
-        MutableStateFlow<PremiumState>(PremiumState.Determined(isPremium))
+        MutableStateFlow(initialState ?: PremiumState.Determined(isPremium))
     override val premiumState: StateFlow<PremiumState> = _premiumState.asStateFlow()
 
     var refreshCalls = 0

@@ -100,9 +100,15 @@ class FeedbackViewModel(
 
     /**
      * Retry interview: premium-gated. Premium users open a NEW conversation
-     * on the same experience profile; everyone else is routed to the
-     * paywall exactly once per tap (no conversation is created). The closed
+     * on the same experience profile; free users are routed to the paywall
+     * exactly once per tap (no conversation is created). The closed
      * conversation is never reused or mutated.
+     *
+     * UNRESOLVED entitlement is NOT free. A determined-free verdict is the
+     * only state that may open the paywall; Loading and Unavailable surface
+     * a recoverable error instead, because the paywall cannot sell anything
+     * when entitlement is unknown (its offers load through the same
+     * unavailable SDK).
      */
     fun practiceAgain() {
         if (practicing) return
@@ -110,12 +116,33 @@ class FeedbackViewModel(
         practiceAgainState = PracticeAgainState.Working
         viewModelScope.launch {
             monetization.refresh()
-            val premium =
-                (monetization.premiumState.value as? PremiumState.Determined)?.isPremium == true
-            if (!premium) {
-                practiceAgainState = PracticeAgainState.RequiresPurchase
-                practicing = false
-                return@launch
+            when (val entitlement = monetization.premiumState.value) {
+                is PremiumState.Determined ->
+                    if (!entitlement.isPremium) {
+                        practiceAgainState = PracticeAgainState.RequiresPurchase
+                        practicing = false
+                        return@launch
+                    }
+
+                // Still resolving after refresh: no session, no paywall.
+                // The error state exposes the existing "Try Again" affordance,
+                // which re-runs this method and refreshes entitlement again.
+                is PremiumState.Loading -> {
+                    practiceAgainState = PracticeAgainState.Error(
+                        "Still checking your premium access. Please try again.",
+                    )
+                    practicing = false
+                    return@launch
+                }
+
+                // SDK not configured/reachable: no session, no paywall.
+                is PremiumState.Unavailable -> {
+                    practiceAgainState = PracticeAgainState.Error(
+                        "Premium access is unavailable right now. Please try again.",
+                    )
+                    practicing = false
+                    return@launch
+                }
             }
             val detail = when (val lookedUp = conversations.getConversation(conversationId)) {
                 is ApiResult.Error -> {
@@ -182,20 +209,54 @@ class FeedbackViewModel(
      * [AnswerFeedback.practiceOpportunity] decides eligibility; the existing
      * premium entitlement decides access. Ineligible items never touch
      * monetization and never open the form.
+     *
+     * UNRESOLVED entitlement is NOT free: only a determined-free verdict
+     * routes to the paywall. [PremiumState.Loading] and
+     * [PremiumState.Unavailable] surface an inline recoverable error with
+     * the form open, because the paywall cannot sell anything while
+     * entitlement is unknown — its offers load through the same
+     * unavailable SDK. Submission stays gated by [startRetry], so opening
+     * the form grants nothing.
      */
     fun requestPractice(feedbackItem: AnswerFeedback) {
         if (!feedbackItem.practiceOpportunity) return
         viewModelScope.launch {
             monetization.refresh()
-            val premium =
-                (monetization.premiumState.value as? PremiumState.Determined)?.isPremium == true
-            if (premium) {
-                practiceFormTarget = feedbackItem.answerMessageId
-            } else {
-                retryGateRequiresPurchase = true
+            when (val entitlement = monetization.premiumState.value) {
+                is PremiumState.Determined ->
+                    if (entitlement.isPremium) {
+                        practiceFormTarget = feedbackItem.answerMessageId
+                    } else {
+                        retryGateRequiresPurchase = true
+                    }
+
+                is PremiumState.Loading, is PremiumState.Unavailable -> {
+                    val target = feedbackItem.answerMessageId
+                    retryStates = retryStates + (
+                        target to AnswerRetryState.Error(
+                            message = unresolvedEntitlementMessage(entitlement),
+                        )
+                        )
+                    // Keep the form open so the existing Error rendering
+                    // shows the message above the preserved input, and the
+                    // user can resubmit (which re-checks entitlement).
+                    practiceFormTarget = target
+                }
             }
         }
     }
+
+    /**
+     * User-facing copy for an entitlement that could not be resolved. Kept
+     * separate from a determined-free verdict, which routes to the paywall
+     * instead. Reused by both targeted-retry gates.
+     */
+    private fun unresolvedEntitlementMessage(state: PremiumState): String =
+        when (state) {
+            is PremiumState.Unavailable ->
+                "Premium access is unavailable right now. Please try again."
+            else -> "Still checking your premium access. Please try again."
+        }
 
     fun closePracticeForm() {
         practiceFormTarget = null
@@ -243,11 +304,28 @@ class FeedbackViewModel(
             // not start a second submission for the same target.
             if (retryStates[target] is AnswerRetryState.Submitting) return@launch
             monetization.refresh()
-            val premium =
-                (monetization.premiumState.value as? PremiumState.Determined)?.isPremium == true
-            if (!premium) {
-                retryGateRequiresPurchase = true
-                return@launch
+            when (val entitlement = monetization.premiumState.value) {
+                // Only a determined-free verdict routes to the paywall.
+                is PremiumState.Determined ->
+                    if (!entitlement.isPremium) {
+                        retryGateRequiresPurchase = true
+                        return@launch
+                    }
+
+                // Unresolved entitlement must not read as free, and must not
+                // send the user to a paywall that cannot load offers. Surface
+                // a recoverable inline error instead: the form stays open
+                // with the draft preserved, and "Try Again"/Submit re-runs
+                // this gate. The retry backend is still never called.
+                is PremiumState.Loading, is PremiumState.Unavailable -> {
+                    retryStates = retryStates + (
+                        target to AnswerRetryState.Error(
+                            message = unresolvedEntitlementMessage(entitlement),
+                        )
+                        )
+                    practiceFormTarget = target
+                    return@launch
+                }
             }
             retryStates = retryStates + (target to AnswerRetryState.Submitting)
             when (

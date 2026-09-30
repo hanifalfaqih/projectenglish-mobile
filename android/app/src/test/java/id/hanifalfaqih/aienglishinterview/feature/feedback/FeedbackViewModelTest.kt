@@ -18,6 +18,7 @@ import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnRequest
 import id.hanifalfaqih.aienglishinterview.data.remote.SendTurnResponse
 import id.hanifalfaqih.aienglishinterview.data.remote.VoiceTurnResponse
 import id.hanifalfaqih.aienglishinterview.core.monetization.FakeMonetization
+import id.hanifalfaqih.aienglishinterview.core.monetization.PremiumState
 import id.hanifalfaqih.aienglishinterview.data.repository.FeedbackRepository
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -362,6 +364,88 @@ class PracticeAgainGatingTest {
 
         assertTrue(vm.practiceAgainState is PracticeAgainState.Done)
         assertEquals(1, api.practiceCalls)
+    }
+
+    /**
+     * AC-03: entitlement still LOADING after refresh is NOT free. No session
+     * is created, the paywall is not requested, and the state is a
+     * recoverable error whose "Try Again" affordance re-runs the gate.
+     */
+    @Test
+    fun loading_practiceAgainWaitsInsteadOfPaywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        val monetization = FakeMonetization(initialState = PremiumState.Loading)
+        val vm = viewModel(api, monetization)
+        advanceUntilIdle()
+
+        vm.practiceAgain()
+        advanceUntilIdle()
+
+        val state = vm.practiceAgainState
+        assertTrue("loading must not open the paywall", state is PracticeAgainState.Error)
+        assertFalse(state is PracticeAgainState.RequiresPurchase)
+        assertEquals(0, api.practiceCalls)
+        assertTrue(monetization.refreshCalls >= 1)
+
+        // Recovery: once entitlement resolves, the same action proceeds.
+        monetization.setPremium(true)
+        vm.practiceAgain()
+        advanceUntilIdle()
+
+        assertTrue(vm.practiceAgainState is PracticeAgainState.Done)
+        assertEquals(1, api.practiceCalls)
+    }
+
+    /**
+     * AC-04: entitlement UNAVAILABLE (SDK not configured / unreachable) is
+     * NOT free. No session is created, the paywall is not requested — it
+     * could not load offers through the same unavailable SDK — and the user
+     * gets a recoverable error with the existing retry affordance.
+     */
+    @Test
+    fun unavailable_practiceAgainShowsRecoverableErrorNotPaywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        val monetization = FakeMonetization(
+            initialState = PremiumState.Unavailable("RevenueCat is not configured."),
+        )
+        val vm = viewModel(api, monetization)
+        advanceUntilIdle()
+
+        vm.practiceAgain()
+        advanceUntilIdle()
+
+        val state = vm.practiceAgainState
+        assertTrue("unavailable must not open the paywall", state is PracticeAgainState.Error)
+        assertFalse(state is PracticeAgainState.RequiresPurchase)
+        assertTrue((state as PracticeAgainState.Error).message.isNotBlank())
+        assertEquals(0, api.practiceCalls)
+        assertFalse(vm.practiceAgainState is PracticeAgainState.Working)
+
+        // Recovery path: entitlement becomes available, the action succeeds.
+        monetization.setPremium(true)
+        vm.practiceAgain()
+        advanceUntilIdle()
+
+        assertTrue(vm.practiceAgainState is PracticeAgainState.Done)
+        assertEquals(1, api.practiceCalls)
+    }
+
+    /**
+     * AC-02 regression guard: only a DETERMINED-FREE verdict may route to
+     * the paywall. Ensures the unresolved-state handling did not change the
+     * free-user behavior.
+     */
+    @Test
+    fun determinedFree_isTheOnlyStateThatOpensPaywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        val vm = viewModel(api, FakeMonetization(initialState = PremiumState.Determined(false)))
+        advanceUntilIdle()
+
+        vm.practiceAgain()
+        advanceUntilIdle()
+
+        assertTrue(vm.practiceAgainState is PracticeAgainState.RequiresPurchase)
+        assertEquals(0, api.practiceCalls)
     }
 }
 
@@ -834,5 +918,124 @@ class M12MonetizationGateTest {
 
         vm.closePracticeForm()
         assertEquals(null, vm.practiceFormTarget)
+    }
+
+    /**
+     * M12 gate, LOADING entitlement. Unresolved is NOT free: the affordance
+     * must not route to the paywall (it could not load offers through the
+     * same unresolved SDK) and must not call the retry backend. The user
+     * gets a recoverable inline error with the form open, and resubmitting
+     * once entitlement resolves succeeds.
+     */
+    @Test
+    fun requestPractice_loading_showsRecoverableErrorNotPaywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
+        val monetization = FakeMonetization(initialState = PremiumState.Loading)
+        val vm = viewModel(api, monetization)
+        advanceUntilIdle()
+
+        vm.requestPractice(item())
+        advanceUntilIdle()
+
+        assertEquals("loading must not open the paywall", false, vm.retryGateRequiresPurchase)
+        assertEquals(0, api.submitCalls)
+        val state = vm.retryStates["u1"] as AnswerRetryState.Error
+        assertTrue(state.message.isNotBlank())
+        // Form open so the existing Error UI offers a retry path.
+        assertEquals("u1", vm.practiceFormTarget)
+
+        // Recovery: entitlement resolves, resubmission goes through.
+        monetization.setPremium(true)
+        vm.startRetry(item(), "Better answer.")
+        advanceUntilIdle()
+
+        assertEquals(1, api.submitCalls)
+        assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
+        assertEquals(false, vm.retryGateRequiresPurchase)
+    }
+
+    /**
+     * M12 gate, UNAVAILABLE entitlement (SDK not configured / unreachable).
+     * Same contract as LOADING: no paywall, no retry backend call, and a
+     * recoverable inline error.
+     */
+    @Test
+    fun requestPractice_unavailable_showsRecoverableErrorNotPaywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
+        val monetization = FakeMonetization(
+            initialState = PremiumState.Unavailable("RevenueCat is not configured."),
+        )
+        val vm = viewModel(api, monetization)
+        advanceUntilIdle()
+
+        vm.requestPractice(item())
+        advanceUntilIdle()
+
+        assertEquals("unavailable must not open the paywall", false, vm.retryGateRequiresPurchase)
+        assertEquals(0, api.submitCalls)
+        assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error)
+        assertEquals("u1", vm.practiceFormTarget)
+
+        monetization.setPremium(true)
+        vm.startRetry(item(), "Better answer.")
+        advanceUntilIdle()
+
+        assertEquals(1, api.submitCalls)
+        assertTrue(vm.retryStates["u1"] is AnswerRetryState.FeedbackAvailable)
+    }
+
+    /**
+     * The submission gate re-checks entitlement independently of
+     * [requestPractice]: a submission attempted while entitlement is
+     * unresolved must not reach the retry backend and must not open the
+     * paywall, leaving a recoverable error with the draft's form intact.
+     */
+    @Test
+    fun startRetry_unresolvedEntitlement_neverCallsRetryBackendOrPaywall() = runTest(dispatcher) {
+        for (initial in listOf(
+            PremiumState.Loading,
+            PremiumState.Unavailable("RevenueCat is not configured."),
+        )) {
+            val api = ScriptedFeedbackApi()
+            api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
+            val monetization = FakeMonetization(initialState = initial)
+            val vm = viewModel(api, monetization)
+            advanceUntilIdle()
+
+            vm.startRetry(item(), "Better answer.")
+            advanceUntilIdle()
+
+            assertEquals(0, api.submitCalls)
+            assertEquals(false, vm.retryGateRequiresPurchase)
+            assertTrue(vm.retryStates["u1"] is AnswerRetryState.Error)
+            assertFalse(vm.retryStates["u1"] is AnswerRetryState.Submitting)
+            // Recoverable: the form stays open for another attempt.
+            assertEquals("u1", vm.practiceFormTarget)
+        }
+    }
+
+    /**
+     * AC-02 equivalent for M12: only a DETERMINED-FREE verdict may route to
+     * the paywall. Guards the unresolved-state handling against changing
+     * free-user behavior.
+     */
+    @Test
+    fun determinedFree_isTheOnlyStateThatOpensM12Paywall() = runTest(dispatcher) {
+        val api = ScriptedFeedbackApi()
+        api.submitRetryScript = { _, _ -> Response.success(201, retryDto()) }
+        val monetization = FakeMonetization(initialState = PremiumState.Determined(false))
+        val vm = viewModel(api, monetization)
+        advanceUntilIdle()
+
+        vm.requestPractice(item())
+        advanceUntilIdle()
+
+        assertTrue(vm.retryGateRequiresPurchase)
+        assertEquals(null, vm.practiceFormTarget)
+        assertEquals(0, api.submitCalls)
+        // No inline error is manufactured for a determined-free user.
+        assertTrue(vm.retryStates["u1"] == null || vm.retryStates["u1"] is AnswerRetryState.Idle)
     }
 }
