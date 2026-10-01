@@ -14,7 +14,7 @@ const val PREMIUM_ENTITLEMENT_ID = "premium"
 
 /** Premium interview practice: detailed per-answer feedback. */
 const val PREMIUM_BLURB = "Premium unlocks detailed per-answer feedback and " +
-    "professional communication coaching. Interviews and overall feedback stay free."
+    "targeted practice. Interviews and overall feedback stay free."
 
 sealed interface PremiumState {
     data object Loading : PremiumState

@@ -3,17 +3,16 @@ package id.hanifalfaqih.aienglishinterview.feature.experience
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -21,12 +20,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import id.hanifalfaqih.aienglishinterview.ui.components.BannerTone
+import id.hanifalfaqih.aienglishinterview.ui.components.PrimaryButton
+import id.hanifalfaqih.aienglishinterview.ui.components.QuietAction
+import id.hanifalfaqih.aienglishinterview.ui.components.ScreenSubtitle
+import id.hanifalfaqih.aienglishinterview.ui.components.ScreenTitle
+import id.hanifalfaqih.aienglishinterview.ui.components.StatusBanner
 import id.hanifalfaqih.aienglishinterview.ui.theme.AIEnglishInterviewTheme
 
 /**
- * Slice 2 resume entry: pick a PDF/DOCX, parse via the real backend, then
+ * Slice 2 resume entry: pick a PDF, parse via the real backend, then
  * hand off to select-one review. Cancellation stays put; every failure is
  * an explicit error state, never faked content.
+ *
+ * The authoritative /resume/parse contract accepts PDF only — the picker
+ * reflects that and never offers DOCX.
+ *
+ * Presentation: one quiet instruction strip, one primary action, flat
+ * status banners — no oversized upload circles or nested panels.
  */
 @Composable
 fun ImportResumeScreen(
@@ -62,45 +73,55 @@ fun ImportResumeScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp),
     ) {
-        Text(
-            text = "Import from Resume",
-            style = MaterialTheme.typography.headlineMedium,
+        Spacer(modifier = Modifier.height(40.dp))
+        ScreenTitle("Import from Resume")
+        Spacer(modifier = Modifier.height(8.dp))
+        ScreenSubtitle(
+            "Choose a PDF. We'll extract candidate experiences for you to " +
+                "review — nothing is sent to the interview until you pick one.",
         )
-        Text(
-            text = "Choose a PDF or DOCX. We'll extract candidate experiences for you to review — nothing is sent to the interview until you pick one.",
-            style = MaterialTheme.typography.bodyMedium,
+
+        Spacer(modifier = Modifier.height(28.dp))
+
+        StatusBanner(
+            text = "Supported format: PDF",
+            tone = BannerTone.Info,
         )
-        Button(
-            onClick = { picker.launch(arrayOf(MIME_PDF, MIME_DOCX)) },
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        PrimaryButton(
+            text = "Choose file",
+            onClick = { picker.launch(arrayOf(MIME_PDF)) },
             enabled = !parsing,
+            busy = parsing,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Choose file")
-        }
+        )
 
         if (parsing) {
-            Text(
-                text = uiState.step,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            CircularProgressIndicator()
-        }
-        if (uiState is ImportUiState.Error) {
-            Text(
-                text = uiState.message,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
+            Spacer(modifier = Modifier.height(16.dp))
+            StatusBanner(
+                text = "Parsing your resume — ${uiState.step}",
+                tone = BannerTone.Progress,
+                spinning = true,
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = onBack, enabled = !parsing) {
-                Text("Back")
-            }
+        if (uiState is ImportUiState.Error) {
+            Spacer(modifier = Modifier.height(16.dp))
+            StatusBanner(
+                text = uiState.message,
+                tone = BannerTone.Error,
+            )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        QuietAction(text = "Back", onClick = onBack, enabled = !parsing)
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 

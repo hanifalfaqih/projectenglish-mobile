@@ -1,22 +1,20 @@
-package id.hanifalfaqih.aienglishinterview.feature.experience
+ package id.hanifalfaqih.aienglishinterview.feature.experience
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -24,17 +22,25 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import id.hanifalfaqih.aienglishinterview.ui.components.AppTextField
+import id.hanifalfaqih.aienglishinterview.ui.components.BannerTone
+import id.hanifalfaqih.aienglishinterview.ui.components.PrimaryButton
+import id.hanifalfaqih.aienglishinterview.ui.components.ScreenSubtitle
+import id.hanifalfaqih.aienglishinterview.ui.components.ScreenTitle
+import id.hanifalfaqih.aienglishinterview.ui.components.StatusBanner
 import id.hanifalfaqih.aienglishinterview.ui.theme.AIEnglishInterviewTheme
 
 /**
  * Minimal functional My Experience form: one entry, then Continue creates
  * the profile and the conversation and navigates with the real id.
+ *
+ * Presentation: fields sit directly on the neutral canvas with a clear
+ * top-to-bottom reading order; status uses flat banners; one blue primary.
  */
 @Composable
 fun ExperienceScreen(
     onInterviewReady: (conversationId: String) -> Unit,
     onReviewReady: () -> Unit,
-    onGoPremium: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ExperienceViewModel = viewModel(),
 ) {
@@ -73,99 +79,110 @@ fun ExperienceScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            // Shrink the scroll viewport above the IME so bringIntoView
+            // can always align focused fields clear of the keyboard.
+            .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 24.dp),
     ) {
-        Text(text = "My Experience", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            text = "Tell us about one real experience to ground your interview.",
-            style = MaterialTheme.typography.bodyMedium,
+        Spacer(modifier = Modifier.height(40.dp))
+        ScreenTitle("My Experience")
+        Spacer(modifier = Modifier.height(8.dp))
+        ScreenSubtitle("Tell us about one real experience to ground your interview")
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // Resume import — quiet path, described in prose, not a panel.
+        StatusBanner(
+            text = "Have a resume? Import a PDF and pick from what's extracted.",
+            tone = BannerTone.Info,
+            actionLabel = "Upload PDF",
+            onAction = { picker.launch(arrayOf("application/pdf")) },
         )
-        TextButton(onClick = onGoPremium) {
-            Text("Premium practice")
-        }
-        OutlinedButton(
-            onClick = { picker.launch(arrayOf("application/pdf")) },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Upload resume (PDF)")
-        }
 
         if (parsing) {
-            Text(
-                text = (uiState as ExperienceUiState.Parsing).step,
-                style = MaterialTheme.typography.bodySmall,
+            Spacer(modifier = Modifier.height(12.dp))
+            StatusBanner(
+                text = "Parsing your resume — ${(uiState as ExperienceUiState.Parsing).step}",
+                tone = BannerTone.Progress,
+                spinning = true,
             )
-            CircularProgressIndicator()
         }
 
-        OutlinedTextField(
-            value = form.title,
-            onValueChange = { viewModel.updateForm(form.copy(title = it)) },
-            label = { Text("Title *") },
-            supportingText = { if (form.title.isBlank()) Text("Title is required") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = form.organization,
-            onValueChange = { viewModel.updateForm(form.copy(organization = it)) },
-            label = { Text("Organization") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = form.role,
-            onValueChange = { viewModel.updateForm(form.copy(role = it)) },
-            label = { Text("Role") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = form.description,
-            onValueChange = { viewModel.updateForm(form.copy(description = it)) },
-            label = { Text("Description *") },
-            supportingText = { if (form.description.isBlank()) Text("Description is required") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            minLines = 3,
-        )
-        OutlinedTextField(
-            value = form.skillsRaw,
-            onValueChange = { viewModel.updateForm(form.copy(skillsRaw = it)) },
-            label = { Text("Skills (comma separated)") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            singleLine = true,
-        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            AppTextField(
+                value = form.title,
+                onValueChange = { viewModel.updateForm(form.copy(title = it)) },
+                label = "Title",
+                required = true,
+                error = if (form.titleError) "Title is required" else null,
+                enabled = !busy,
+                singleLine = true,
+            )
+            AppTextField(
+                value = form.organization,
+                onValueChange = { viewModel.updateForm(form.copy(organization = it)) },
+                label = "Organization",
+                enabled = !busy,
+                singleLine = true,
+            )
+            AppTextField(
+                value = form.role,
+                onValueChange = { viewModel.updateForm(form.copy(role = it)) },
+                label = "Role",
+                enabled = !busy,
+                singleLine = true,
+            )
+            AppTextField(
+                value = form.description,
+                onValueChange = { viewModel.updateForm(form.copy(description = it)) },
+                label = "Description",
+                required = true,
+                error = if (form.descriptionError) "Description is required" else null,
+                enabled = !busy,
+                minLines = 3,
+            )
+            AppTextField(
+                value = form.skillsRaw,
+                onValueChange = { viewModel.updateForm(form.copy(skillsRaw = it)) },
+                label = "Skills",
+                enabled = !busy,
+                singleLine = true,
+                helperText = "Comma separated",
+            )
+        }
 
         if (uiState is ExperienceUiState.Submitting) {
-            Text(text = uiState.step, style = MaterialTheme.typography.bodySmall)
-            CircularProgressIndicator()
+            Spacer(modifier = Modifier.height(16.dp))
+            StatusBanner(
+                text = "Setting up your interview — ${uiState.step}",
+                tone = BannerTone.Progress,
+                spinning = true,
+            )
         }
         if (uiState is ExperienceUiState.Error) {
-            Text(
+            Spacer(modifier = Modifier.height(16.dp))
+            StatusBanner(
                 text = uiState.message,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
+                tone = BannerTone.Error,
+                actionLabel = "Retry",
+                onAction = { viewModel.submit() },
             )
-            TextButton(onClick = { viewModel.submit() }, enabled = canSubmit) {
-                Text("Retry")
-            }
         }
 
-        Button(
+        Spacer(modifier = Modifier.height(24.dp))
+
+        PrimaryButton(
+            text = "Continue",
             onClick = { viewModel.submit() },
             enabled = canSubmit,
+            busy = uiState is ExperienceUiState.Submitting,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Continue")
-        }
+        )
+
+        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
@@ -173,6 +190,6 @@ fun ExperienceScreen(
 @Composable
 private fun ExperienceScreenPreview() {
     AIEnglishInterviewTheme {
-        ExperienceScreen(onInterviewReady = {}, onReviewReady = {}, onGoPremium = {})
+        ExperienceScreen(onInterviewReady = {}, onReviewReady = {})
     }
 }

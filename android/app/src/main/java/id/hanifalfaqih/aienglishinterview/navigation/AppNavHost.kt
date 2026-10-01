@@ -111,9 +111,6 @@ fun AppNavHost(
                 onReviewReady = {
                     navController.navigate(Routes.REVIEW)
                 },
-                onGoPremium = {
-                    navController.navigate(Routes.PREMIUM)
-                },
             )
         }
         composable(Routes.REVIEW) {

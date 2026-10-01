@@ -30,7 +30,7 @@ class ImportResumeViewModel(
 
     fun onUnreadableFile() {
         uiState = ImportUiState.Error(
-            "Could not read that file. Please choose a readable PDF or DOCX, or enter manually.",
+            "Could not read that file. Please choose a readable PDF or enter manually.",
         )
     }
 
